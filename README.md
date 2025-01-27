@@ -4,6 +4,9 @@ MiraConverse: Your AI-Powered Voice Interaction Companion
 
 MiraConverse is a real-time voice interaction system that serves as your AI conversation partner. By integrating speech recognition and text-to-speech technologies, it delivers a responsive and immersive conversational experience.
 
+![MiraConverse GUI](docs/screenshots/mira_converse_gui.png)
+*MiraConverse's graphical interface input and output device selection, possible speech detection graph and text injection prompt.*
+
 ## Key Features
 
 - **Model Flexibility:** Supports any model with an OpenAI-compatible API, including local private models, giving you the freedom to choose the best fit for your needs.
@@ -17,7 +20,6 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
 - Real-time speech recognition using Whisper
 - Natural language processing with LLM integration
 - Text-to-speech synthesis using Kokoro
-- Professional-grade audio processing with WebRTC VAD
 - Graphical interface for audio monitoring and device selection
 - Configurable voice trigger system
 - Robust WebSocket-based client-server architecture
@@ -86,7 +88,29 @@ Optionally, you can set up a virtual environment to isolate the project dependen
 
 #### Linux Setup
 
-The installation process depends on whether you want to use the GUI interface or run in headless mode.
+##### GUI Mode
+If you want to use the graphical interface:
+
+1. Create your configuration file:
+```bash
+cp default_config.json config.json
+```
+
+2. (Optional) Create and activate a virtual environment:
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+3. Install GUI dependencies:
+```bash
+pip install -r client_requirements.txt
+```
+
+4. Run with GUI (default):
+```bash
+python client.py
+```
 
 ##### Headless Mode (No GUI)
 If you only need command-line operation without a graphical interface:
@@ -110,60 +134,10 @@ pip install -r client_requirements_no_gui.txt
 4. Run in headless mode:
 ```bash
 python client.py --no-gui
-```
-
-##### GUI Mode
-If you want to use the graphical interface:
-
-1. Create your configuration file:
-```bash
-cp default_config.json config.json
-```
-
-2. (Optional) Create and activate a virtual environment:
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-3. Install GUI dependencies:
-```bash
-pip install -r client_requirements.txt
-```
-
-4. Run with GUI (default):
-```bash
-python client.py
 ```
 
 #### Windows Setup
 
-The installation process depends on whether you want to use the GUI interface or run in headless mode.
-
-##### Headless Mode (No GUI)
-If you only need command-line operation without a graphical interface:
-
-1. Create your configuration file:
-```bash
-copy default_config.json config.json
-```
-
-2. (Optional) Create and activate a virtual environment:
-```bash
-python -m venv venv
-venv\Scripts\activate
-```
-
-3. Install headless dependencies:
-```bash
-pip install -r client_requirements_no_gui.txt
-```
-
-4. Run in headless mode:
-```bash
-python client.py --no-gui
-```
-
 ##### GUI Mode
 If you want to use the graphical interface:
 
@@ -188,22 +162,18 @@ pip install -r client_requirements.txt
 python client.py
 ```
 
-#### macOS Setup
-
-The installation process on macOS depends on whether you want to use the GUI interface or run in headless mode.
-
 ##### Headless Mode (No GUI)
 If you only need command-line operation without a graphical interface:
 
 1. Create your configuration file:
 ```bash
-cp default_config.json config.json
+copy default_config.json config.json
 ```
 
 2. (Optional) Create and activate a virtual environment:
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+python -m venv venv
+venv\Scripts\activate
 ```
 
 3. Install headless dependencies:
@@ -215,6 +185,8 @@ pip install -r client_requirements_no_gui.txt
 ```bash
 python client.py --no-gui
 ```
+
+#### macOS Setup
 
 ##### GUI Mode
 If you want to use the graphical interface, you'll need additional dependencies:
@@ -248,6 +220,30 @@ pip install -r client_requirements.txt
 6. Run with GUI (default):
 ```bash
 python client.py
+```
+
+##### Headless Mode (No GUI)
+If you only need command-line operation without a graphical interface:
+
+1. Create your configuration file:
+```bash
+cp default_config.json config.json
+```
+
+2. (Optional) Create and activate a virtual environment:
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+3. Install headless dependencies:
+```bash
+pip install -r client_requirements_no_gui.txt
+```
+
+4. Run in headless mode:
+```bash
+python client.py --no-gui
 ```
 
 Note: The headless mode is particularly useful for server environments or when you don't need visual feedback. It uses fewer system resources and doesn't require the tkinter dependency.
@@ -429,3 +425,35 @@ MiraConverse uses a robust client-server architecture designed for scalability a
 - **Flexible Deployment**: Server can be run locally or on a remote machine
 - **Robust Communication**: WebSocket-based protocol with authentication and automatic reconnection
 - **Independent Operation**: Each client maintains its own session state and audio calibration
+
+## Long Term Project Goals
+
+Expand capabailties to become a fully fledged smart home AI assistant with tool calling support and integration with 
+third party API's.
+
+1. **Weather Services**
+   - Integration with weather APIs for real-time weather information
+   - Support for multiple weather data providers
+
+2. **Smart Home Integration**
+   - Smart lighting control through various provider APIs
+   - Support for major platforms like Philips Hue, LIFX, and other smart lighting systems
+   - Expandable framework for other smart home devices
+   - Scene creation and management capabilities
+
+3. **Music Service Integration**
+   - Spotify API integration for music playback and control
+   - Playlist management and music recommendations
+   - Support for other music streaming services
+   - Voice-controlled music playback features
+
+4. **Advanced Voice Detection and Fingerprinting**
+   - Voice fingerprinting for user identification
+   - Personalized conversation handling without trigger words
+   - Multi-user support with unique voice profiles
+   - Dynamic context switching based on speaker identity
+   - Continuous conversation mode for fingerprinted voices
+
+5. **Timer and Alarm System**
+   - Voice-controlled alarm timer creation and management
+   - Multiple concurrent timer support

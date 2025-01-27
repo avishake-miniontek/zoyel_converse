@@ -1,6 +1,6 @@
 # MiraConverse
 
-MiraConverse: Your AI-Powered Voice Interaction Companion
+MiraConverse: Your AI-Powered Voice Interaction Assistant
 
 MiraConverse is a real-time voice interaction system that serves as your AI conversation partner. By integrating speech recognition and text-to-speech technologies, it delivers a responsive and immersive conversational experience.
 

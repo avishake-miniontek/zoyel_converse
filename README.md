@@ -8,6 +8,10 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
 
 *MiraConverse's graphical interface with Mic input, and output device (speakers) selection, speech detection graph and text injection prompt.*
 
+[![MiraConverse Demo](https://img.youtube.com/vi/n9oD7IPIWVI/0.jpg)](https://www.youtube.com/watch?v=n9oD7IPIWVI)
+
+*Click the image above to watch a demo of MiraConverse in action*
+
 ## Key Features
 
 - **Model Flexibility:** Supports any model with an OpenAI-compatible API, including local private models, giving you the freedom to choose the best fit for your needs.

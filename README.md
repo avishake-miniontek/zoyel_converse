@@ -5,7 +5,8 @@ MiraConverse: Your AI-Powered Voice Interaction Companion
 MiraConverse is a real-time voice interaction system that serves as your AI conversation partner. By integrating speech recognition and text-to-speech technologies, it delivers a responsive and immersive conversational experience.
 
 ![MiraConverse GUI](docs/screenshots/mira_converse_gui.png)
-*MiraConverse's graphical interface input and output device selection, possible speech detection graph and text injection prompt.*
+
+*MiraConverse's graphical interface with Mic input, and output device (speakers) selection, speech detection graph and text injection prompt.*
 
 ## Key Features
 

@@ -8,15 +8,17 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 import time
 import sys
 import json
-sys.path.append('/mnt/models/hexgrad/Kokoro-82M')
-from models import build_model
-from collections import deque
-from src.audio_core import AudioCore
-from urllib.parse import urlparse, parse_qs  # Import for URI parsing
 
 # Load configuration
 with open('config.json', 'r') as f:
     CONFIG = json.load(f)
+
+# Add Kokoro model path to Python path
+sys.path.append(CONFIG['server']['models']['kokoro']['path'])
+from models import build_model
+from collections import deque
+from src.audio_core import AudioCore
+from urllib.parse import urlparse, parse_qs  # Import for URI parsing
 
 # Get trigger word from config (always use lowercase for comparison)
 TRIGGER_WORD = CONFIG['assistant']['name'].lower()
@@ -101,9 +103,15 @@ asr_pipeline = pipeline(
 
 print("Loading TTS model...")
 # Load Kokoro TTS model
-tts_model = build_model(f'{KOKORO_PATH}/kokoro-v0_19.pth', device)
+kokoro_model_path = f'{KOKORO_PATH}/kokoro-v0_19.pth'  # TODO: Add model filename to config
 VOICE_NAME = CONFIG['server']['models']['kokoro']['voice_name']
-tts_voicepack = torch.load(f'{KOKORO_PATH}/voices/{VOICE_NAME}.pt', weights_only=True).to(device)
+voice_path = f'{KOKORO_PATH}/voices/{VOICE_NAME}.pt'  # TODO: Add voices subdir to config
+
+print(f"Loading Kokoro model from: {kokoro_model_path}")
+print(f"Loading voice from: {voice_path}")
+
+tts_model = build_model(kokoro_model_path, device)
+tts_voicepack = torch.load(voice_path, weights_only=True).to(device)
 
 from kokoro import generate
 
@@ -392,7 +400,7 @@ async def transcribe_audio(websocket):
 
         async for message in websocket:
             if isinstance(message, bytes):
-                # Audio data
+        # Get or create AudioServer for this client
                 try:
                     # Convert to float32 and process through AudioCore
                     chunk_data, sr = server.audio_core.bytes_to_float32_audio(message, sample_rate=16000)

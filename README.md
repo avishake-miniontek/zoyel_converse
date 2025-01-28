@@ -42,6 +42,7 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
   - Fedora: `sudo dnf install portaudio portaudio-devel`
   - Arch Linux: `sudo pacman -S portaudio`
   - macOS: `brew install portaudio`
+  - Windows: Download and install the [PortAudio binaries](http://www.portaudio.com/download.html)
 
 ### Client Requirements
 - Python 3.8 or higher
@@ -49,6 +50,14 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
 - Audio output device (speakers)
 - Basic CPU for audio processing
 - tkinter/tk>=8.6 (only for GUI mode)
+  - Linux/macOS: Usually included with Python
+  - Windows: Included with Python installer (ensure to check "tcl/tk and IDLE" during installation)
+- CMake for building audio processing dependencies
+  - Ubuntu/Debian: `sudo apt-get install cmake`
+  - Fedora: `sudo dnf install cmake`
+  - Arch Linux: `sudo pacman -S cmake`
+  - macOS: `brew install cmake`
+  - Windows: Download installer from https://cmake.org/download/
 
 ## Installation
 
@@ -68,22 +77,36 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
 
      # macOS
      brew install portaudio
+
+     # Windows
+     # Download and install PortAudio binaries from http://www.portaudio.com/download.html
+     # Ensure the DLL is in your system PATH
      ```
 
 2. Clone the repository:
 ```bash
+# Linux/macOS
+git clone https://github.com/KartDriver/mira_converse.git
+cd mira_converse
+
+# Windows (Command Prompt)
 git clone https://github.com/KartDriver/mira_converse.git
 cd mira_converse
 ```
 
 2. Install server dependencies:
 ```bash
+# Linux/macOS/Windows
 pip install -r server_requirements.txt
 ```
 
 3. Create your configuration file:
 ```bash
+# Linux/macOS
 cp default_config.json config.json
+
+# Windows (Command Prompt)
+copy default_config.json config.json
 ```
 
 4. Set up the required models:
@@ -91,14 +114,16 @@ cp default_config.json config.json
    - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
    - Set the downloaded model paths in your config.json
 
-Note: The models are large files (several GB) and require sufficient disk space. Make sure to use the correct paths where you downloaded the models in your config.json file:
+Note: The models are large files (several GB) and require sufficient disk space. Make sure to use the correct paths where you downloaded the models in your config.json file. On Windows, use double backslashes or forward slashes in paths:
 ```json
 "models": {
     "whisper": {
-        "path": "/path/to/whisper-large-v3-turbo"
+        "path": "C:/path/to/whisper-large-v3-turbo"  // Windows path example
+        // or "path": "C:\\path\\to\\whisper-large-v3-turbo"
     },
     "kokoro": {
-        "path": "/path/to/Kokoro-82M",
+        "path": "C:/path/to/Kokoro-82M",  // Windows path example
+        // or "path": "C:\\path\\to\\Kokoro-82M"
         "voice_name": "af"  // Choose your preferred voice pack
     }
 }
@@ -117,23 +142,38 @@ Optionally, you can set up a virtual environment to isolate the project dependen
 ##### GUI Mode
 If you want to use the graphical interface:
 
-1. Create your configuration file:
+1. Install system dependencies:
+```bash
+# Ubuntu/Debian
+sudo apt-get install cmake
+
+# Fedora
+sudo dnf install cmake
+
+# Arch Linux
+sudo pacman -S cmake
+
+# macOS
+brew install cmake
+```
+
+2. Create your configuration file:
 ```bash
 cp default_config.json config.json
 ```
 
-2. (Optional) Create and activate a virtual environment:
+3. (Optional) Create and activate a virtual environment:
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 ```
 
-3. Install GUI dependencies:
+4. Install GUI dependencies:
 ```bash
 pip install -r client_requirements.txt
 ```
 
-4. Run with GUI (default):
+5. Run with GUI (default):
 ```bash
 python client.py
 ```
@@ -141,23 +181,38 @@ python client.py
 ##### Headless Mode (No GUI)
 If you only need command-line operation without a graphical interface:
 
-1. Create your configuration file:
+1. Install system dependencies:
+```bash
+# Ubuntu/Debian
+sudo apt-get install cmake
+
+# Fedora
+sudo dnf install cmake
+
+# Arch Linux
+sudo pacman -S cmake
+
+# macOS
+brew install cmake
+```
+
+2. Create your configuration file:
 ```bash
 cp default_config.json config.json
 ```
 
-2. (Optional) Create and activate a virtual environment:
+3. (Optional) Create and activate a virtual environment:
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 ```
 
-3. Install headless dependencies:
+4. Install headless dependencies:
 ```bash
 pip install -r client_requirements_no_gui.txt
 ```
 
-4. Run in headless mode:
+5. Run in headless mode:
 ```bash
 python client.py --no-gui
 ```
@@ -167,23 +222,27 @@ python client.py --no-gui
 ##### GUI Mode
 If you want to use the graphical interface:
 
-1. Create your configuration file:
+1. Install CMake:
+   - Download and install CMake from the official website: https://cmake.org/download/
+   - Make sure to add CMake to the system PATH during installation
+
+2. Create your configuration file:
 ```bash
 copy default_config.json config.json
 ```
 
-2. (Optional) Create and activate a virtual environment:
+3. (Optional) Create and activate a virtual environment:
 ```bash
 python -m venv venv
 venv\Scripts\activate
 ```
 
-3. Install GUI dependencies:
+4. Install GUI dependencies:
 ```bash
 pip install -r client_requirements.txt
 ```
 
-4. Run with GUI (default):
+5. Run with GUI (default):
 ```bash
 python client.py
 ```
@@ -191,23 +250,27 @@ python client.py
 ##### Headless Mode (No GUI)
 If you only need command-line operation without a graphical interface:
 
-1. Create your configuration file:
+1. Install CMake:
+   - Download and install CMake from the official website: https://cmake.org/download/
+   - Make sure to add CMake to the system PATH during installation
+
+2. Create your configuration file:
 ```bash
 copy default_config.json config.json
 ```
 
-2. (Optional) Create and activate a virtual environment:
+3. (Optional) Create and activate a virtual environment:
 ```bash
 python -m venv venv
 venv\Scripts\activate
 ```
 
-3. Install headless dependencies:
+4. Install headless dependencies:
 ```bash
 pip install -r client_requirements_no_gui.txt
 ```
 
-4. Run in headless mode:
+5. Run in headless mode:
 ```bash
 python client.py --no-gui
 ```
@@ -217,33 +280,32 @@ python client.py --no-gui
 ##### GUI Mode
 If you want to use the graphical interface, you'll need additional dependencies:
 
-1. Install Homebrew if you haven't already:
+1. Install system dependencies:
 ```bash
+# Install Homebrew if you haven't already
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install required packages
+brew install cmake python-tk
 ```
 
-2. Install Python with tkinter support:
-```bash
-brew install python-tk
-```
-
-3. Create your configuration file:
+2. Create your configuration file:
 ```bash
 cp default_config.json config.json
 ```
 
-4. (Optional) Create and activate a virtual environment:
+3. (Optional) Create and activate a virtual environment:
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 ```
 
-5. Install GUI dependencies:
+4. Install GUI dependencies:
 ```bash
 pip install -r client_requirements.txt
 ```
 
-6. Run with GUI (default):
+5. Run with GUI (default):
 ```bash
 python client.py
 ```
@@ -251,7 +313,16 @@ python client.py
 ##### Headless Mode (No GUI)
 If you only need command-line operation without a graphical interface:
 
-1. Create your configuration file:
+1. Install system dependencies:
+```bash
+# Install Homebrew if you haven't already
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install required packages
+brew install cmake
+```
+
+2. Create your configuration file:
 ```bash
 cp default_config.json config.json
 ```
@@ -310,10 +381,12 @@ Here's a detailed explanation of each configuration section:
     "gpu_device": "auto",      // GPU device selection (auto, cpu, or cuda:N)
     "models": {
         "whisper": {
-            "path": "/path/to/whisper/model"  // Path to Whisper model
+            "path": "/path/to/whisper/model",  // Unix path
+            // or "path": "C:/path/to/whisper/model"  // Windows path
         },
         "kokoro": {
-            "path": "/path/to/kokoro/model",  // Path to Kokoro model
+            "path": "/path/to/kokoro/model",  // Unix path
+            // or "path": "C:/path/to/kokoro/model"  // Windows path
             "voice_name": "af"          // Voice pack to use
         }
     }
@@ -407,11 +480,21 @@ The headless mode is particularly useful for:
 
 ## Troubleshooting
 
-- If audio devices aren't detected, check your system's audio settings
-- For GPU errors, verify CUDA installation and GPU availability
-- Connection issues may require checking firewall settings and network connectivity
-- For model loading errors, verify model paths in config.json
-- If you experience audio issues, try adjusting the VAD mode in speech_detection settings
+- If audio devices aren't detected:
+  - Windows: Check Sound settings in Control Panel > Sound > Recording/Playback
+  - Linux/macOS: Check your system's audio settings
+- For GPU errors:
+  - Windows: Verify CUDA installation in Device Manager > Display Adapters
+  - All systems: Verify CUDA installation and GPU availability
+- Connection issues:
+  - Windows: Check Windows Defender Firewall settings
+  - All systems: Check firewall settings and network connectivity
+- For model loading errors:
+  - Windows: Ensure paths use either forward slashes (C:/path) or escaped backslashes (C:\\path)
+  - All systems: Verify model paths in config.json are correct
+- If you experience audio issues:
+  - Windows: Check audio format settings in Sound Control Panel
+  - All systems: Try adjusting the VAD mode in speech_detection settings
 
 ## License
 

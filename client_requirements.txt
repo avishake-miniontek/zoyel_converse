@@ -1,3 +1,4 @@
+setuptools>=68.0.0  # Required for pkg_resources
 websockets>=11.0.3
 numpy>=1.24.0
 samplerate>=0.1.0

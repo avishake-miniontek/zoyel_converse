@@ -51,7 +51,7 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
 
 1. Clone the repository:
 ```bash
-git clone [repository-url]
+git clone https://github.com/KartDriver/mira_converse.git
 cd audio_chat
 ```
 

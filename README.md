@@ -37,6 +37,11 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
   - GPU acceleration is required for real-time performance
   - CUDA toolkit must be installed for GPU support
 - Sufficient disk space for models (approximately 10GB total)
+- PortAudio library for audio processing
+  - Ubuntu/Debian: `sudo apt-get install libportaudio2 portaudio19-dev`
+  - Fedora: `sudo dnf install portaudio portaudio-devel`
+  - Arch Linux: `sudo pacman -S portaudio`
+  - macOS: `brew install portaudio`
 
 ### Client Requirements
 - Python 3.8 or higher
@@ -49,10 +54,26 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
 
 ### Server Setup
 
-1. Clone the repository:
+1. Install system dependencies:
+   - Install PortAudio library for your system:
+     ```bash
+     # Ubuntu/Debian
+     sudo apt-get install libportaudio2 portaudio19-dev
+
+     # Fedora
+     sudo dnf install portaudio portaudio-devel
+
+     # Arch Linux
+     sudo pacman -S portaudio
+
+     # macOS
+     brew install portaudio
+     ```
+
+2. Clone the repository:
 ```bash
 git clone https://github.com/KartDriver/mira_converse.git
-cd audio_chat
+cd mira_converse
 ```
 
 2. Install server dependencies:

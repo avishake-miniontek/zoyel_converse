@@ -8,13 +8,48 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 import time
 import sys
 import json
+import os
 
 # Load configuration
 with open('config.json', 'r') as f:
     CONFIG = json.load(f)
 
+# Check if model paths exist and are accessible
+whisper_path = CONFIG['server']['models']['whisper']['path']
+kokoro_path = CONFIG['server']['models']['kokoro']['path']
+
+if not os.path.exists(whisper_path):
+    print(f"Error: Whisper model path does not exist: {whisper_path}")
+    print("Please update the whisper.path in config.json to point to your Whisper model directory")
+    sys.exit(1)
+
+if not os.path.exists(kokoro_path):
+    print(f"Error: Kokoro model path does not exist: {kokoro_path}")
+    print("Please update the kokoro.path in config.json to point to your Kokoro model directory")
+    sys.exit(1)
+
+# Check for required Kokoro files and directories
+kokoro_model_file = os.path.join(kokoro_path, 'kokoro-v0_19.pth')
+kokoro_models_file = os.path.join(kokoro_path, 'models.py')
+kokoro_voices_dir = os.path.join(kokoro_path, 'voices')
+voice_name = CONFIG['server']['models']['kokoro']['voice_name']
+voice_file = os.path.join(kokoro_voices_dir, f'{voice_name}.pt')
+
+required_paths = [
+    (kokoro_model_file, "Kokoro model file"),
+    (kokoro_models_file, "Kokoro models.py file"),
+    (kokoro_voices_dir, "Kokoro voices directory"),
+    (voice_file, f"Voice file for '{voice_name}'")
+]
+
+for path, description in required_paths:
+    if not os.path.exists(path):
+        print(f"Error: {description} not found: {path}")
+        print("Please check your config.json and ensure all required files are present")
+        sys.exit(1)
+
 # Add Kokoro model path to Python path
-sys.path.append(CONFIG['server']['models']['kokoro']['path'])
+sys.path.append(kokoro_path)
 from models import build_model
 from collections import deque
 from src.audio_core import AudioCore
@@ -103,15 +138,12 @@ asr_pipeline = pipeline(
 
 print("Loading TTS model...")
 # Load Kokoro TTS model
-kokoro_model_path = f'{KOKORO_PATH}/kokoro-v0_19.pth'  # TODO: Add model filename to config
-VOICE_NAME = CONFIG['server']['models']['kokoro']['voice_name']
-voice_path = f'{KOKORO_PATH}/voices/{VOICE_NAME}.pt'  # TODO: Add voices subdir to config
+print(f"Loading Kokoro model from: {kokoro_model_file}")
+print(f"Loading voice from: {voice_file}")
+print(f"Using voice name: {voice_name}")
 
-print(f"Loading Kokoro model from: {kokoro_model_path}")
-print(f"Loading voice from: {voice_path}")
-
-tts_model = build_model(kokoro_model_path, device)
-tts_voicepack = torch.load(voice_path, weights_only=True).to(device)
+tts_model = build_model(kokoro_model_file, device)
+tts_voicepack = torch.load(voice_file, weights_only=True).to(device)
 
 from kokoro import generate
 
@@ -259,7 +291,7 @@ async def handle_tts(websocket, text, client_id):
         loop = asyncio.get_event_loop()
         audio_future = loop.run_in_executor(
             None,
-            lambda: generate(tts_model, text, tts_voicepack, lang=VOICE_NAME[0])
+            lambda: generate(tts_model, text, tts_voicepack, lang=voice_name[0])
         )
         
         audio, _ = await audio_future
@@ -400,7 +432,6 @@ async def transcribe_audio(websocket):
 
         async for message in websocket:
             if isinstance(message, bytes):
-        # Get or create AudioServer for this client
                 try:
                     # Convert to float32 and process through AudioCore
                     chunk_data, sr = server.audio_core.bytes_to_float32_audio(message, sample_rate=16000)

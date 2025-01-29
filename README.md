@@ -59,29 +59,42 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
   - macOS: `brew install cmake`
   - Windows: Download installer from https://cmake.org/download/
 
+- espeak-ng for text-to-speech phonemization
+  - While Kokoro documentation states this is optional, Windows users have reported it being required for the system to work
+  - Ubuntu/Debian: Usually pre-installed, if not: `sudo apt-get install espeak-ng`
+  - Fedora: `sudo dnf install espeak-ng`
+  - Arch Linux: `sudo pacman -S espeak-ng`
+  - macOS: `brew install espeak-ng`
+  - Windows: Download and install espeak-ng from [GitHub releases](https://github.com/espeak-ng/espeak-ng/releases)
+  - After installation on Windows, set these environment variables before importing phonemizer (Any Windows users, please report back if this is required, and I will add code to detect Windows OS and check the path and try to include it):
+    ```python
+    import os
+    os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = r"C:\Program Files\eSpeak NG\libespeak-ng.dll"
+    os.environ["PHONEMIZER_ESPEAK_PATH"] = r"C:\Program Files\eSpeak NG\espeak-ng.exe"
+    ```
+
 ## Installation
 
 ### Server Setup
 
 1. Install system dependencies:
-   - Install PortAudio library for your system:
-     ```bash
-     # Ubuntu/Debian
-     sudo apt-get install libportaudio2 portaudio19-dev
+```bash
+# Ubuntu/Debian
+sudo apt-get install libportaudio2 portaudio19-dev
 
-     # Fedora
-     sudo dnf install portaudio portaudio-devel
+# Fedora
+sudo dnf install portaudio portaudio-devel
 
-     # Arch Linux
-     sudo pacman -S portaudio
+# Arch Linux
+sudo pacman -S portaudio
 
-     # macOS
-     brew install portaudio
+# macOS
+brew install portaudio
 
-     # Windows
-     # Download and install PortAudio binaries from http://www.portaudio.com/download.html
-     # Ensure the DLL is in your system PATH
-     ```
+# Windows
+# Download and install PortAudio binaries from http://www.portaudio.com/download.html
+# Ensure the DLL is in your system PATH
+```
 
 2. Clone the repository:
 ```bash

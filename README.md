@@ -77,6 +77,18 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
 
 ### Server Setup
 
+Optionally, you can set up a virtual environment to isolate the project dependencies:
+
+```bash
+# Linux/macOS
+python3 -m venv venv
+source venv/bin/activate
+
+# Windows
+python -m venv venv
+venv\Scripts\activate
+```
+
 1. Install system dependencies:
 ```bash
 # Ubuntu/Debian

@@ -122,16 +122,23 @@ copy default_config.json config.json
    - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
    - Set the downloaded model paths in your config.json
 
-Note: The models are large files (several GB) and require sufficient disk space. Make sure to use the correct paths where you downloaded the models in your config.json file. On Windows, use double backslashes or forward slashes in paths:
+Note: The models are large files (several GB) and require sufficient disk space. Make sure to use the correct paths where you downloaded the models in your config.json file:
+
 ```json
 "models": {
     "whisper": {
-        "path": "C:/path/to/whisper-large-v3-turbo"  // Windows path example
-        // or "path": "C:\\path\\to\\whisper-large-v3-turbo"
+        // Linux/macOS path example:
+        "path": "/home/user/models/whisper-large-v3-turbo",
+        // Windows path examples (use either format):
+        // "path": "C:/Users/user/models/whisper-large-v3-turbo"
+        // "path": "C:\\Users\\user\\models\\whisper-large-v3-turbo"
     },
     "kokoro": {
-        "path": "C:/path/to/Kokoro-82M",  // Windows path example
-        // or "path": "C:\\path\\to\\Kokoro-82M"
+        // Linux/macOS path example:
+        "path": "/home/user/models/Kokoro-82M",
+        // Windows path examples (use either format):
+        // "path": "C:/Users/user/models/Kokoro-82M"
+        // "path": "C:\\Users\\user\\models\\Kokoro-82M",
         "voice_name": "af"  // Choose your preferred voice pack
     }
 }
@@ -389,12 +396,18 @@ Here's a detailed explanation of each configuration section:
     "gpu_device": "auto",      // GPU device selection (auto, cpu, or cuda:N)
     "models": {
         "whisper": {
-            "path": "/path/to/whisper/model",  // Unix path
-            // or "path": "C:/path/to/whisper/model"  // Windows path
+            // Linux/macOS path example:
+            "path": "/home/user/models/whisper-large-v3-turbo",
+            // Windows path examples (use either format):
+            // "path": "C:/Users/user/models/whisper-large-v3-turbo"
+            // "path": "C:\\Users\\user\\models\\whisper-large-v3-turbo"
         },
         "kokoro": {
-            "path": "/path/to/kokoro/model",  // Unix path
-            // or "path": "C:/path/to/kokoro/model"  // Windows path
+            // Linux/macOS path example:
+            "path": "/home/user/models/Kokoro-82M",
+            // Windows path examples (use either format):
+            // "path": "C:/Users/user/models/Kokoro-82M"
+            // "path": "C:\\Users\\user\\models\\Kokoro-82M"
             "voice_name": "af"          // Voice pack to use
         }
     }

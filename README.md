@@ -98,11 +98,6 @@ brew install portaudio
 
 2. Clone the repository:
 ```bash
-# Linux/macOS
-git clone https://github.com/KartDriver/mira_converse.git
-cd mira_converse
-
-# Windows (Command Prompt)
 git clone https://github.com/KartDriver/mira_converse.git
 cd mira_converse
 ```

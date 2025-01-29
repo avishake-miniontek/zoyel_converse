@@ -2,13 +2,63 @@
 
 import asyncio
 import websockets
-import torch
 import numpy as np
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 import time
 import sys
 import json
 import os
+from collections import deque
+from urllib.parse import urlparse, parse_qs  # Import for URI parsing
+
+################################################################################
+# GPU SELECTION
+################################################################################
+
+# Set CUDA_VISIBLE_DEVICES before importing any ML frameworks
+def select_gpu():
+    """Select best GPU and set CUDA_VISIBLE_DEVICES"""
+    try:
+        import subprocess
+        
+        # Run nvidia-smi to get memory info
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=index,memory.total,memory.used,memory.free', '--format=csv,noheader,nounits'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        best_gpu = None
+        max_free_memory = 0
+        min_required_gb = 4
+        
+        # Parse each line of nvidia-smi output
+        for line in result.stdout.strip().split('\n'):
+            gpu_id, total, used, free = map(int, line.strip().split(', '))
+            free_memory_gb = free / 1024.0  # MiB to GB for display
+            print(f"GPU {gpu_id}: {free_memory_gb:.2f}GB free VRAM")
+            
+            if free >= (min_required_gb * 1024) and free > max_free_memory:
+                max_free_memory = free
+                best_gpu = gpu_id
+        
+        if best_gpu is not None:
+            print(f"Setting CUDA_VISIBLE_DEVICES={best_gpu}")
+            os.environ['CUDA_VISIBLE_DEVICES'] = str(best_gpu)
+            return True
+            
+    except Exception as e:
+        print(f"Error selecting GPU: {e}")
+    return False
+
+# Select GPU before importing ML frameworks
+has_gpu = select_gpu()
+
+# Now import ML frameworks after CUDA_VISIBLE_DEVICES is set
+import torch
+from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+from kokoro import KPipeline
+from src.audio_core import AudioCore
 
 # Load configuration
 with open('config.json', 'r') as f:
@@ -28,88 +78,12 @@ if not os.path.exists(kokoro_path):
     print("Please update the kokoro.path in config.json to point to your Kokoro model directory")
     sys.exit(1)
 
-# Check for required Kokoro files and directories
-kokoro_model_file = os.path.join(kokoro_path, 'kokoro-v0_19.pth')
-kokoro_models_file = os.path.join(kokoro_path, 'models.py')
-kokoro_voices_dir = os.path.join(kokoro_path, 'voices')
-voice_name = CONFIG['server']['models']['kokoro']['voice_name']
-voice_file = os.path.join(kokoro_voices_dir, f'{voice_name}.pt')
-
-required_paths = [
-    (kokoro_model_file, "Kokoro model file"),
-    (kokoro_models_file, "Kokoro models.py file"),
-    (kokoro_voices_dir, "Kokoro voices directory"),
-    (voice_file, f"Voice file for '{voice_name}'")
-]
-
-for path, description in required_paths:
-    if not os.path.exists(path):
-        print(f"Error: {description} not found: {path}")
-        print("Please check your config.json and ensure all required files are present")
-        sys.exit(1)
-
-# Add Kokoro model path to Python path
-sys.path.append(kokoro_path)
-from models import build_model
-from collections import deque
-from src.audio_core import AudioCore
-from urllib.parse import urlparse, parse_qs  # Import for URI parsing
-
 # Get trigger word from config (always use lowercase for comparison)
 TRIGGER_WORD = CONFIG['assistant']['name'].lower()
 
-################################################################################
-# CONFIG & MODEL LOADING
-################################################################################
-
-def find_best_gpu():
-    """Find the NVIDIA GPU with the most available VRAM (>= 4GB)"""
-    if not torch.cuda.is_available():
-        return "cpu"
-    
-    try:
-        import subprocess
-        
-        # Run nvidia-smi to get memory info
-        result = subprocess.run(
-            ['nvidia-smi', '--query-gpu=index,memory.total,memory.used,memory.free', '--format=csv,noheader,nounits'],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        
-        best_gpu = None
-        max_free_memory = 0
-        min_required_gb = 4
-        
-        # Parse each line of nvidia-smi output
-        for line in result.stdout.strip().split('\n'):
-            gpu_id, total, used, free = map(int, line.strip().split(', '))
-            free_memory_gb = free / 1024  # Convert MiB to GB
-            
-            print(f"GPU {gpu_id}: {free_memory_gb:.2f}GB free VRAM")
-            
-            if free_memory_gb >= min_required_gb and free_memory_gb > max_free_memory:
-                max_free_memory = free_memory_gb
-                best_gpu = gpu_id
-        
-        if best_gpu is not None:
-            return f"cuda:{best_gpu}"
-            
-    except Exception as e:
-        print(f"Error getting GPU memory info: {e}")
-        
-    return "cpu"
-
-# Set device from config or auto-detect
-device = CONFIG['server']['gpu_device']
-if device == "auto":
-    device = find_best_gpu()
-elif not torch.cuda.is_available():
-    device = "cpu"
-
-KOKORO_PATH = CONFIG['server']['models']['kokoro']['path']
-torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+# Set device based on whether GPU was selected
+device = "cuda:0" if has_gpu else "cpu"
+torch_dtype = torch.float16 if has_gpu else torch.float32
 
 MODEL_PATH = CONFIG['server']['models']['whisper']['path']
 
@@ -137,15 +111,14 @@ asr_pipeline = pipeline(
 )
 
 print("Loading TTS model...")
-# Load Kokoro TTS model
-print(f"Loading Kokoro model from: {kokoro_model_file}")
-print(f"Loading voice from: {voice_file}")
+# Initialize Kokoro TTS pipeline
+voice_name = CONFIG['server']['models']['kokoro']['voice_name']
 print(f"Using voice name: {voice_name}")
 
-tts_model = build_model(kokoro_model_file, device)
-tts_voicepack = torch.load(voice_file, weights_only=True).to(device)
-
-from kokoro import generate
+# Initialize Kokoro pipeline with American English ('a') as default
+tts_pipeline = KPipeline(lang_code='a')
+# Keep TTS model in full precision since it expects float32 inputs
+tts_pipeline.model = tts_pipeline.model.to(device=device, dtype=torch.float32)
 
 ################################################################################
 # AUDIO SERVER
@@ -282,19 +255,25 @@ async def process_audio_chunk(websocket, chunk, fade_in=None, fade_out=None, fad
 async def handle_tts(websocket, text, client_id):
     """
     Handle text-to-speech request and stream audio chunks back to the client.
-    Uses the Kokoro TTS model in streaming fashion for lower latency.
+    Uses the Kokoro TTS pipeline in streaming fashion for lower latency.
     """
     try:
         server = client_settings_manager.get_audio_server(client_id)
         print(f"\n[TTS] Generating audio for text chunk (client {client_id}): '{text}'")
 
-        loop = asyncio.get_event_loop()
-        audio_future = loop.run_in_executor(
-            None,
-            lambda: generate(tts_model, text, tts_voicepack, lang=voice_name[0])
-        )
+        # Generate audio using the Kokoro pipeline
+        generator = tts_pipeline(text, voice=f'{voice_name}_bella', speed=1)
+        audio_chunks = []
         
-        audio, _ = await audio_future
+        # Collect all audio chunks and ensure float32
+        for _, _, audio in generator:
+            # Convert PyTorch tensor to NumPy array in float32
+            if torch.is_tensor(audio):
+                audio = audio.detach().cpu().numpy()
+            audio_chunks.append(audio.astype(np.float32))
+        
+        # Concatenate all chunks
+        audio = np.concatenate(audio_chunks)
         print(f"[TTS] Generated {len(audio)} samples ({len(audio)/24000:.2f}s at 24kHz)")
 
         audio = np.clip(audio, -1.0, 1.0).astype(np.float32)

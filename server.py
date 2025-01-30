@@ -98,14 +98,22 @@ asr_pipeline = pipeline(
     tokenizer=processor.tokenizer,
     feature_extractor=processor.feature_extractor,
     torch_dtype=torch_dtype,
-    device=device
+    device=device,
 )
 
 print("Loading Kokoro TTS model...")
 voice_name = CONFIG['server']['models']['kokoro']['voice_name']
 print(f"Using voice name: {voice_name}")
-tts_pipeline = KPipeline(lang_code='a')
+tts_pipeline = KPipeline(lang_code='a')  # Initialize TTS pipeline without batch_size
 tts_pipeline.model = tts_pipeline.model.to(device=device, dtype=torch.float32)
+
+# Batch processing configuration
+ASR_BATCH_TIMEOUT = 0.3  # Process ASR batch after 300ms of no new data
+ASR_MAX_BATCH_SIZE = 4   # Maximum items in ASR batch before forcing processing
+ASR_SUB_BATCH_SIZE = 2   # Process ASR in smaller sub-batches for responsiveness
+
+TTS_BATCH_TIMEOUT = 0.2  # Process TTS batch after 200ms of no new data
+TTS_MAX_BATCH_SIZE = 4   # Maximum items in TTS batch before forcing processing
 
 ################################################################################
 # AUDIO SERVER
@@ -155,6 +163,14 @@ class AudioServer:
         self.last_transcript = ""
         self.last_transcript_time = 0
         self.min_repeat_interval = 2.0
+
+        # Batch processing buffers
+        self.asr_batch = []
+        self.asr_batch_clients = []
+        self.asr_batch_last_update = time.time()
+        self.tts_batch = []
+        self.tts_batch_clients = []
+        self.tts_batch_last_update = time.time()
 
     def should_process_transcript(self, transcript, confidence, speech_duration):
         if not transcript:
@@ -237,9 +253,68 @@ async def send_end_frame(websocket):
 # Keep track of accumulated text for each client
 client_tts_buffers = {}
 
+async def process_tts_batch(server, force=False):
+    """Process TTS requests sequentially."""
+    if not server.tts_batch:
+        return
+
+    try:
+        # Process each TTS request sequentially
+        while server.tts_batch:
+            text, websocket = server.tts_batch.pop(0)
+            print(f"[TTS] Generating audio for: {text}")
+            
+            try:
+                # Generate audio using pipeline call (which uses infer internally)
+                generator = tts_pipeline(
+                    text,
+                    voice=f'{voice_name}_heart',
+                    speed=1.0
+                )
+                
+                audio_list = []
+                for _, _, audio in generator:
+                    if torch.is_tensor(audio):
+                        audio = audio.detach().cpu().numpy()
+                    audio_list.append(audio.astype(np.float32))
+                
+                if audio_list:
+                    audio = np.concatenate(audio_list)
+                
+                if audio is not None:
+                    audio = np.clip(audio, -1.0, 1.0).astype(np.float32)
+                    FRAME_SIZE = 512
+                    tasks = []
+
+                    if len(audio) >= FRAME_SIZE:
+                        tasks.append(send_audio_frame(websocket, audio[:FRAME_SIZE].copy()))
+
+                    for i in range(FRAME_SIZE, len(audio) - FRAME_SIZE, FRAME_SIZE):
+                        tasks.append(send_audio_frame(websocket, audio[i:i + FRAME_SIZE].copy()))
+                        if len(tasks) >= 8:
+                            await asyncio.gather(*tasks)
+                            tasks = []
+
+                    if tasks:
+                        await asyncio.gather(*tasks)
+
+                    await send_end_frame(websocket)
+
+            except Exception as e:
+                print(f"[TTS] Error processing item: {e}")
+                continue
+
+    except Exception as e:
+        print(f"[TTS] Processing error: {e}")
+    finally:
+        # Clear any remaining items
+        server.tts_batch.clear()
+        server.tts_batch_clients = []
+        server.tts_batch_last_update = time.time()
+
 async def handle_tts_multi_utterances(websocket, text, client_id):
     """
-    Accumulates text until we have a complete sentence, then generates and sends audio.
+    Accumulates text until we have a complete sentence, then adds to TTS batch.
     A sentence is considered complete if it ends with ., !, or ?.
     """
     try:
@@ -266,43 +341,19 @@ async def handle_tts_multi_utterances(websocket, text, client_id):
             # Keep the remainder in the buffer
             remainder = buffer[last_end + 1:].strip()
             client_tts_buffers[client_id] = remainder
+            
             if remainder:
                 print(f"[TTS] Buffering remaining text: '{remainder}'")
             
             if sentence:
-                print(f"[TTS] Generating audio for sentence: '{sentence}'")
-                generator = tts_pipeline(sentence, voice=f'{voice_name}_bella', speed=1)
-
-                # Generate and process TTS audio
-                audio_list = []
-                for _, _, audio in generator:
-                    if torch.is_tensor(audio):
-                        audio = audio.detach().cpu().numpy()
-                    audio_list.append(audio.astype(np.float32))
-
-                if not audio_list:
-                    return
+                server = client_settings_manager.get_audio_server(client_id)
                 
-                # Process and send audio in chunks
-                audio = np.concatenate(audio_list)
-                audio = np.clip(audio, -1.0, 1.0).astype(np.float32)
-                FRAME_SIZE = 512
-                tasks = []
-
-                if len(audio) >= FRAME_SIZE:
-                    tasks.append(send_audio_frame(websocket, audio[:FRAME_SIZE].copy()))
-
-                for i in range(FRAME_SIZE, len(audio) - FRAME_SIZE, FRAME_SIZE):
-                    tasks.append(send_audio_frame(websocket, audio[i:i + FRAME_SIZE].copy()))
-                    if len(tasks) >= 8:
-                        await asyncio.gather(*tasks)
-                        tasks = []
-
-                if tasks:
-                    await asyncio.gather(*tasks)
-
-                # Send end frame after the complete sentence
-                await send_end_frame(websocket)
+                # Add to batch
+                server.tts_batch.append((sentence, websocket))
+                server.tts_batch_last_update = time.time()
+                
+                # Process batch if needed
+                await process_tts_batch(server)
 
     except Exception as e:
         print(f"TTS Error: {e}")
@@ -354,6 +405,62 @@ def verify_api_key(websocket, client_id):
 # MAIN ASR HANDLER
 ################################################################################
 
+async def process_asr_batch(server, force=False):
+    """Process a batch of ASR requests."""
+    if not server.asr_batch:
+        return
+
+    # Check if we should process the batch
+    now = time.time()
+    should_process = (
+        force or
+        len(server.asr_batch) >= ASR_MAX_BATCH_SIZE or
+        (now - server.asr_batch_last_update) > ASR_BATCH_TIMEOUT
+    )
+    
+    if not should_process:
+        return
+
+    try:
+        print(f"Processing ASR batch of size {len(server.asr_batch)}")
+        
+        # Process in smaller sub-batches for better responsiveness
+        for i in range(0, len(server.asr_batch), ASR_SUB_BATCH_SIZE):
+            sub_batch = server.asr_batch[i:i + ASR_SUB_BATCH_SIZE]
+            sub_batch_clients = server.asr_batch_clients[i:i + ASR_SUB_BATCH_SIZE]
+            
+            asr_results = asr_pipeline(
+                sub_batch,
+                return_timestamps=True,
+                generate_kwargs={
+                    "task": "transcribe",
+                    "language": "english",
+                    "use_cache": False
+                }
+            )
+
+            # Process results for this sub-batch
+            for idx, asr_result in enumerate(asr_results):
+                client_id, websocket, speech_duration = sub_batch_clients[idx]
+                transcript = asr_result["text"].strip()
+                confidence = asr_result.get("confidence", 0.0)
+
+                if transcript and server.should_process_transcript(
+                    transcript,
+                    confidence,
+                    speech_duration
+                ):
+                    print(f"[ASR] {client_id}: '{transcript}'")
+                    await websocket.send(transcript)
+
+    except Exception as e:
+        print(f"ASR Batch processing error: {e}")
+    finally:
+        # Clear batch
+        server.asr_batch.clear()
+        server.asr_batch_clients.clear()
+        server.asr_batch_last_update = time.time()
+
 async def transcribe_audio(websocket):
     client_id = None
     server = None
@@ -390,26 +497,26 @@ async def transcribe_audio(websocket):
                         audio = result.get('audio')
                         if audio is not None and len(audio) > 0:
                             try:
-                                asr_result = asr_pipeline(
-                                    {"array": audio, "sampling_rate": sr},
-                                    return_timestamps=True,
-                                    generate_kwargs={"task": "transcribe",
-                                                     "language": "english",
-                                                     "use_cache": False}
-                                )
-                                transcript = asr_result["text"].strip()
-                                confidence = asr_result.get("confidence", 0.0)
-
-                                if transcript and server.should_process_transcript(
-                                    transcript,
-                                    confidence,
+                                # Add to ASR batch
+                                server.asr_batch.append({
+                                    "array": audio,
+                                    "sampling_rate": sr
+                                })
+                                server.asr_batch_clients.append((
+                                    client_id,
+                                    websocket,
                                     result['speech_duration']
-                                ):
-                                    print(f"[ASR] {client_id}: '{transcript}'")
-                                    await websocket.send(transcript)
+                                ))
+                                server.asr_batch_last_update = time.time()
+
+                                # Process batch immediately when speech ends
+                                await process_asr_batch(server, force=True)
 
                             except Exception as e:
                                 print(f"ASR Error: {e}")
+                                # Clear batch on error
+                                server.asr_batch.clear()
+                                server.asr_batch_clients.clear()
 
                 except Exception as e:
                     print(f"Error processing audio from {client_id}: {e}")
@@ -478,8 +585,15 @@ async def transcribe_audio(websocket):
                 print(f"[TTS] Processing remaining buffered text before disconnect: '{remaining}'")
                 try:
                     await handle_tts_multi_utterances(websocket, remaining + ".", client_id)
+                    # Process any remaining TTS batch
+                    if server.tts_batch:
+                        await process_tts_batch(server, force=True)
                 except Exception as e:
                     print(f"[TTS] Error processing final buffer: {e}")
+            
+            # Process any remaining ASR batch
+            if server.asr_batch:
+                await process_asr_batch(server, force=True)
             
             # Clean up client's TTS buffer
             if client_id in client_tts_buffers:

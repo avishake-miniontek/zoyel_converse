@@ -250,15 +250,23 @@ class AudioOutput:
                 if self.audio_queue:
                     chunk = self.audio_queue.popleft()
                     
+                    # Handle string data
+                    if isinstance(chunk, str):
+                        chunk = chunk.encode('utf-8')
+                    
                     # Remove TTS: prefix if present
                     if chunk.startswith(b'TTS:'):
                         chunk = chunk[4:]
                     
-                    # Convert to float32 with clipping for cleaner audio
-                    audio_data = np.clip(
-                        np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0,
-                        -1.0, 1.0
-                    )
+                    try:
+                        # Convert to float32 with clipping for cleaner audio
+                        audio_data = np.clip(
+                            np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0,
+                            -1.0, 1.0
+                        )
+                    except ValueError as e:
+                        print(f"[TTS Output] Error converting audio data: {e}")
+                        continue
                     
                     # Convert mono to stereo
                     audio_data = np.column_stack((audio_data, audio_data))
@@ -287,6 +295,9 @@ class AudioOutput:
     async def play_chunk(self, chunk):
         """Queue an audio chunk for playback"""
         try:
+            # Ensure chunk is bytes, not str
+            if isinstance(chunk, str):
+                chunk = chunk.encode('utf-8')
             self.audio_queue.append(chunk)
         except Exception as e:
             print(f"[TTS Output] Error queueing chunk: {e}")

@@ -250,22 +250,25 @@ class AudioOutput:
                 if self.audio_queue:
                     chunk = self.audio_queue.popleft()
                     
-                    # Handle string data
-                    if isinstance(chunk, str):
-                        chunk = chunk.encode('utf-8')
-                    
-                    # Remove TTS: prefix if present
-                    if chunk.startswith(b'TTS:'):
-                        chunk = chunk[4:]
-                    
                     try:
-                        # Convert to float32 with clipping for cleaner audio
-                        audio_data = np.clip(
-                            np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0,
-                            -1.0, 1.0
-                        )
-                    except ValueError as e:
-                        print(f"[TTS Output] Error converting audio data: {e}")
+                        # Handle string data and TTS prefix
+                        if isinstance(chunk, str) and chunk.startswith('TTS:'):
+                            chunk = chunk[4:].encode('utf-8')
+                        elif isinstance(chunk, bytes) and chunk.startswith(b'TTS:'):
+                            chunk = chunk[4:]
+                        elif isinstance(chunk, str):
+                            chunk = chunk.encode('utf-8')
+                        
+                        # Convert to numpy array and normalize
+                        raw_data = np.frombuffer(chunk, dtype=np.int16)
+                        if len(raw_data) == 0:
+                            continue
+                            
+                        # Convert to float32 and normalize to [-1, 1]
+                        audio_data = np.clip(raw_data.astype(np.float32) / 32768.0, -1.0, 1.0)
+                            
+                    except Exception as e:
+                        print(f"[TTS Output] Error processing audio chunk: {e}")
                         continue
                     
                     # Convert mono to stereo

@@ -8,3 +8,4 @@ scipy>=1.11.0
 soundfile>=0.12.1
 webrtcvad>=2.0.10
 cmake>=3.31.4
+PyAudio>=0.2.13  # Provides PortAudio binaries for Windows

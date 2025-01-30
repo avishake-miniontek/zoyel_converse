@@ -28,6 +28,8 @@ class AudioOutput:
         self.device_rate = None  # Will detect from the actual device
         self.stream = None
         self.audio_queue = deque()
+        self.queue_not_empty = threading.Event()  # Event for signaling queue has data
+        self.queue_lock = threading.Lock()  # Lock for thread-safe queue operations
         self.playing = False
         self.play_thread = None
         self.current_device = None
@@ -64,29 +66,38 @@ class AudioOutput:
         last_write_time = time.time()
         
         while self.playing:
+            # Wait for data with a timeout
+            if not self.queue_not_empty.wait(timeout=0.1):  # 100ms timeout
+                continue
+                
             try:
-                if self.audio_queue:
+                # Get data from queue in a thread-safe way
+                with self.queue_lock:
+                    if not self.audio_queue:  # Double check queue is not empty
+                        self.queue_not_empty.clear()
+                        continue
                     audio_data = self.audio_queue.popleft()
-                    if audio_data is not None and self.stream and self.stream.active:
-                        now = time.time()
-                        time_since_last = (now - last_write_time) * 1000
-                        try:
-                            self.stream.write(audio_data)
-                            last_write_time = time.time()
-                        except Exception as e:
-                            print(f"[AUDIO] Error writing to stream: {e}")
-                            import traceback
-                            print(traceback.format_exc())
-                    else:
-                        if audio_data is None:
-                            print("[AUDIO] Skipping None audio data")
-                        if not self.stream or not self.stream.active:
-                            print("[AUDIO] Stream not active, attempting recovery")
-                            self._open_stream(self.current_device['index'])
-                            if self.stream and self.stream.active and audio_data is not None:
-                                self.stream.write(audio_data)
+                    if not self.audio_queue:  # If queue is now empty, clear event
+                        self.queue_not_empty.clear()
+                
+                if audio_data is not None and self.stream and self.stream.active:
+                    now = time.time()
+                    time_since_last = (now - last_write_time) * 1000
+                    try:
+                        self.stream.write(audio_data)
+                        last_write_time = time.time()
+                    except Exception as e:
+                        print(f"[AUDIO] Error writing to stream: {e}")
+                        import traceback
+                        print(traceback.format_exc())
                 else:
-                    time.sleep(0.001)
+                    if audio_data is None:
+                        print("[AUDIO] Skipping None audio data")
+                    if not self.stream or not self.stream.active:
+                        print("[AUDIO] Stream not active, attempting recovery")
+                        self._open_stream(self.current_device['index'])
+                        if self.stream and self.stream.active and audio_data is not None:
+                            self.stream.write(audio_data)
 
             except Exception as e:
                 print(f"[AUDIO] Error in playback loop: {e}")
@@ -223,7 +234,9 @@ class AudioOutput:
             # Process the complete utterance
             audio_data = self._process_audio_data(complete_chunk)
             if audio_data is not None:
-                self.audio_queue.append(audio_data)
+                with self.queue_lock:
+                    self.audio_queue.append(audio_data)
+                    self.queue_not_empty.set()  # Signal that data is available
         except Exception as e:
             print(f"[AUDIO] Error processing complete utterance: {e}")
             import traceback
@@ -332,13 +345,20 @@ class AudioOutput:
             return
 
         try:
-            # Create 100ms of silence
-            duration = 0.1  # seconds
+            # Create 200ms of silence (increased from 100ms)
+            duration = 0.2  # seconds
             num_samples = int(self.device_rate * duration)
             silence = np.zeros((num_samples, 2), dtype=np.float32)
             
-            # Write the silent buffer
+            # Write the silent buffer and wait for it to complete
             self.stream.write(silence)
+            time.sleep(duration)  # Ensure warmup completes before proceeding
+            
+            # Clear any existing audio in queue
+            with self.queue_lock:
+                self.audio_queue.clear()
+                self.queue_not_empty.clear()
+            
             print("[AUDIO] Stream warmed up with silent buffer")
             
         except Exception as e:

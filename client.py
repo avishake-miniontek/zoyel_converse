@@ -98,7 +98,7 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
                     audio_data = stream.read(audio_core.CHUNK)[0]  # float32 array
                 except Exception as e:
                     print(f"Stream read error (trying to recover): {e}")
-                    await asyncio.sleep(0.1)
+                    await asyncio.e(0.1)
                     continue
 
                 # Process audio for server-side transcription
@@ -435,7 +435,7 @@ class AsyncThread(threading.Thread):
         try:
             # Clean up audio resources
             if audio_output and audio_output.stream:
-                audio_output.close()
+                await audio_output.close()
             if self.audio_interface and hasattr(self.audio_interface, 'audio_core'):
                 # If the new graphical_interface doesn't store it, skip
                 pass
@@ -463,6 +463,9 @@ class AsyncThread(threading.Thread):
         self.running = False
         if self.loop and not self.loop.is_closed():
             async def shutdown():
+                # Stop audio first to prevent blocking during cleanup
+                if audio_output and audio_output.stream:
+                    await audio_output.close()
                 await self.cleanup()
             
             future = asyncio.run_coroutine_threadsafe(shutdown(), self.loop)
@@ -546,8 +549,7 @@ def run_client():
                     async_thread.stop()  # Stop async operations first
                 if audio_core:
                     audio_core.close()  # Clean up audio resources
-                if audio_output:
-                    audio_output.close()  # Clean up audio output
+                # Note: audio_output.close() is now handled in AsyncThread.stop()
                 audio_interface.close()  # Then close the GUI
                 
             # Set the window close handler

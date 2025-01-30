@@ -27,15 +27,14 @@ class AudioOutput:
         self.input_rate = 24000  # TTS output rate in Hz
         self.device_rate = None  # Will detect from the actual device
         self.stream = None
-        self.audio_queue = deque()
-        self.queue_not_empty = threading.Event()  # Event for signaling queue has data
-        self.queue_lock = threading.Lock()  # Lock for thread-safe queue operations
+        self.audio_queue = None  # Will be initialized as asyncio.Queue
         self.playing = False
-        self.play_thread = None
+        self.playback_task = None
         self.current_device = None
         self.resampler = None
         self.current_utterance = []  # Buffer for current TTS utterance
         self.partial_frame = b''  # Buffer for incomplete frames
+        self.loop = None  # Will store the event loop
         print("Audio output initialized")
 
     def initialize_sync(self):
@@ -43,11 +42,23 @@ class AudioOutput:
         if self.stream and self.stream.active:
             return
 
-        device_idx, device_info = self._find_output_device()
-        self.device_rate = int(device_info['default_samplerate'])
-        print(f"[AUDIO] Device rate: {self.device_rate} Hz, Input rate: {self.input_rate} Hz")
-        self._open_stream(device_idx)
-        self._init_resampler()
+        # Create a new event loop for synchronous initialization
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self.loop = loop
+        
+        try:
+            device_idx, device_info = self._find_output_device()
+            self.device_rate = int(device_info['default_samplerate'])
+            print(f"[AUDIO] Device rate: {self.device_rate} Hz, Input rate: {self.input_rate} Hz")
+            
+            # Run async initialization in the event loop
+            loop.run_until_complete(self._open_stream(device_idx))
+            self._init_resampler()
+            
+        finally:
+            loop.close()
+            self.loop = None
 
     async def initialize(self):
         """Initialize audio output asynchronously."""
@@ -57,34 +68,28 @@ class AudioOutput:
         device_idx, device_info = self._find_output_device()
         self.device_rate = int(device_info['default_samplerate'])
         print(f"[AUDIO] Device rate: {self.device_rate} Hz, Input rate: {self.input_rate} Hz")
-        self._open_stream(device_idx)
+        await self._open_stream(device_idx)
         self._init_resampler()
 
-    def _play_audio_thread(self):
-        """Audio playback thread."""
-        print("[AUDIO] Playback thread started")
+    async def _play_audio_loop(self):
+        """Async audio playback loop."""
+        print("[AUDIO] Playback loop started")
         last_write_time = time.time()
         
         while self.playing:
-            # Wait for data with a timeout
-            if not self.queue_not_empty.wait(timeout=0.1):  # 100ms timeout
-                continue
-                
             try:
-                # Get data from queue in a thread-safe way
-                with self.queue_lock:
-                    if not self.audio_queue:  # Double check queue is not empty
-                        self.queue_not_empty.clear()
-                        continue
-                    audio_data = self.audio_queue.popleft()
-                    if not self.audio_queue:  # If queue is now empty, clear event
-                        self.queue_not_empty.clear()
+                # Wait for data with a timeout
+                try:
+                    audio_data = await asyncio.wait_for(self.audio_queue.get(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    continue
                 
                 if audio_data is not None and self.stream and self.stream.active:
                     now = time.time()
                     time_since_last = (now - last_write_time) * 1000
                     try:
-                        self.stream.write(audio_data)
+                        # Use run_in_executor for non-blocking stream.write
+                        await self.loop.run_in_executor(None, self.stream.write, audio_data)
                         last_write_time = time.time()
                     except Exception as e:
                         print(f"[AUDIO] Error writing to stream: {e}")
@@ -95,36 +100,45 @@ class AudioOutput:
                         print("[AUDIO] Skipping None audio data")
                     if not self.stream or not self.stream.active:
                         print("[AUDIO] Stream not active, attempting recovery")
-                        self._open_stream(self.current_device['index'])
+                        await self._open_stream(self.current_device['index'])
                         if self.stream and self.stream.active and audio_data is not None:
-                            self.stream.write(audio_data)
+                            await self.loop.run_in_executor(None, self.stream.write, audio_data)
 
             except Exception as e:
                 print(f"[AUDIO] Error in playback loop: {e}")
                 import traceback
                 print(traceback.format_exc())
-                time.sleep(0.1)
+                await asyncio.sleep(0.1)
 
-        print("[AUDIO] Playback thread stopping")
+        print("[AUDIO] Playback loop stopping")
 
     async def start_stream(self):
-        """Start the audio stream and playback thread."""
+        """Start the audio stream and playback loop."""
         try:
             # Stop any existing playback
             if self.playing:
                 self.playing = False
-                if self.play_thread and self.play_thread.is_alive():
-                    self.play_thread.join(timeout=1.0)
-                self.audio_queue.clear()
+                if self.playback_task:
+                    try:
+                        await self.playback_task
+                    except asyncio.CancelledError:
+                        pass
+                if self.audio_queue:
+                    while not self.audio_queue.empty():
+                        try:
+                            self.audio_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
 
             # Initialize fresh stream
             await self.initialize()
 
-            # Start new playback thread
+            # Create new queue and start playback
+            self.loop = asyncio.get_running_loop()
+            self.audio_queue = asyncio.Queue()
             self.playing = True
-            self.play_thread = threading.Thread(target=self._play_audio_thread, daemon=True)
-            self.play_thread.start()
-            print("Started new playback thread")
+            self.playback_task = asyncio.create_task(self._play_audio_loop())
+            print("Started new playback loop")
 
         except Exception as e:
             print(f"Error starting stream: {e}")
@@ -132,22 +146,31 @@ class AudioOutput:
             self.stream = None
             await self.initialize()
             self.playing = True
-            self.play_thread = threading.Thread(target=self._play_audio_thread, daemon=True)
-            self.play_thread.start()
+            self.loop = asyncio.get_running_loop()
+            self.audio_queue = asyncio.Queue()
+            self.playback_task = asyncio.create_task(self._play_audio_loop())
             print("Recovered stream after error")
 
-    def pause(self):
+    async def pause(self):
         """Stop playback and clear the queue."""
         self.playing = False
-        if self.play_thread and self.play_thread.is_alive():
-            self.play_thread.join(timeout=1.0)
+        if self.playback_task:
+            try:
+                await self.playback_task
+            except asyncio.CancelledError:
+                pass
         if self.stream and self.stream.active:
             self.stream.stop()
-        self.audio_queue.clear()
+        if self.audio_queue:
+            while not self.audio_queue.empty():
+                try:
+                    self.audio_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
 
-    def close(self):
+    async def close(self):
         """Clean up resources."""
-        self.pause()
+        await self.pause()
         if self.stream:
             self.stream.close()
             self.stream = None
@@ -161,14 +184,14 @@ class AudioOutput:
     async def set_device_by_name(self, device_name):
         """Change the output device by name."""
         print(f"\nChanging output device to: {device_name}")
-        self.pause()
+        await self.pause()
         if self.stream:
             self.stream.close()
             self.stream = None
 
         device_idx, device_info = self._find_output_device(device_name)
         self.device_rate = int(device_info['default_samplerate'])
-        self._open_stream(device_idx)
+        await self._open_stream(device_idx)
         self._init_resampler()  # Initialize resampler for new device rate
 
     async def play_chunk(self, chunk):
@@ -233,10 +256,8 @@ class AudioOutput:
             
             # Process the complete utterance
             audio_data = self._process_audio_data(complete_chunk)
-            if audio_data is not None:
-                with self.queue_lock:
-                    self.audio_queue.append(audio_data)
-                    self.queue_not_empty.set()  # Signal that data is available
+            if audio_data is not None and self.audio_queue is not None:
+                asyncio.create_task(self.audio_queue.put(audio_data))
         except Exception as e:
             print(f"[AUDIO] Error processing complete utterance: {e}")
             import traceback
@@ -339,39 +360,51 @@ class AudioOutput:
             print(f"[AUDIO] Error finding output device: {e}")
             raise
 
-    def _warmup_stream(self):
+    async def _warmup_stream(self):
         """Play a short silent buffer to properly initialize the audio system."""
         if not self.stream or not self.stream.active:
             return
 
         try:
-            # Create 200ms of silence (increased from 100ms)
-            duration = 0.2  # seconds
+            # Create 500ms of silence (increased for better initialization)
+            duration = 0.5  # seconds
             num_samples = int(self.device_rate * duration)
             silence = np.zeros((num_samples, 2), dtype=np.float32)
             
-            # Write the silent buffer and wait for it to complete
-            self.stream.write(silence)
-            time.sleep(duration)  # Ensure warmup completes before proceeding
+            # Write the silent buffer using run_in_executor and wait for it to complete
+            if self.loop is None:
+                self.loop = asyncio.get_running_loop()
+            await self.loop.run_in_executor(None, self.stream.write, silence)
+            await asyncio.sleep(duration)  # Ensure warmup completes before proceeding
+            
+            # Write another shorter buffer to ensure stability
+            short_duration = 0.1
+            short_samples = int(self.device_rate * short_duration)
+            short_silence = np.zeros((short_samples, 2), dtype=np.float32)
+            await self.loop.run_in_executor(None, self.stream.write, short_silence)
+            await asyncio.sleep(short_duration)
             
             # Clear any existing audio in queue
-            with self.queue_lock:
-                self.audio_queue.clear()
-                self.queue_not_empty.clear()
+            if self.audio_queue:
+                while not self.audio_queue.empty():
+                    try:
+                        self.audio_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
             
             print("[AUDIO] Stream warmed up with silent buffer")
             
         except Exception as e:
             print(f"[AUDIO] Warmup error (non-fatal): {e}")
 
-    def _open_stream(self, device_idx):
+    async def _open_stream(self, device_idx):
         """Open and start the audio output stream."""
         try:
             # Close any existing stream first
             if self.stream:
                 self.stream.close()
                 self.stream = None
-                time.sleep(0.1)  # Give time for cleanup
+                await asyncio.sleep(0.1)  # Give time for cleanup
 
             stream_kwargs = {
                 'device': device_idx,
@@ -386,11 +419,11 @@ class AudioOutput:
             print(f"Opening stream with settings: {stream_kwargs}")
             self.stream = sd.OutputStream(**stream_kwargs)
             self.stream.start()
-            time.sleep(0.1)  # Give stream time to fully initialize
+            await asyncio.sleep(0.1)  # Give stream time to fully initialize
             print(f"Stream started successfully")
             
             # Warmup the stream
-            self._warmup_stream()
+            await self._warmup_stream()
 
         except Exception as e:
             if self.stream:

@@ -140,7 +140,6 @@ class AudioOutput:
             device_idx, device_info = self._find_output_device(device_name)
             self.device_rate = int(device_info['default_samplerate'])
             
-            # Create output stream with Windows-specific optimizations
             stream_kwargs = {
                 'device': device_idx,
                 'samplerate': self.device_rate,
@@ -149,13 +148,8 @@ class AudioOutput:
                 'latency': 'low'
             }
             
-            # Use WASAPI on Windows for better performance
-            if platform.system() == 'Windows':
-                stream_kwargs['extra_settings'] = {
-                    'wasapi_exclusive': False,  # Shared mode for compatibility
-                    'wasapi_buffer_size': 480   # Smaller buffer for lower latency
-                }
-            
+            # No extra_settings for Windows here — removed.
+
             self.stream = sd.OutputStream(**stream_kwargs)
             self.stream.start()
             print(f"Successfully switched to device: {device_name}")
@@ -172,40 +166,34 @@ class AudioOutput:
 
         try:
             print("[TTS Output] Initializing audio output...")
-
+            
             # Find suitable output device
             device_idx, device_info = self._find_output_device()
             self.device_rate = int(device_info['default_samplerate'])
-
-            # Create output stream with Windows-specific optimizations
+            
             stream_kwargs = {
                 'device': device_idx,
                 'samplerate': self.device_rate,
                 'channels': 2,  # Use stereo output
                 'dtype': np.float32,
-                'latency': 'low'  # Keep low latency for responsiveness
+                'latency': 'low'
             }
-
-            # Use WASAPI on Windows for better performance
-            if platform.system() == 'Windows':
-                import sounddevice as sd
-                wasapi_settings = sd.WasapiSettings(exclusive=False)
-                stream_kwargs['extra_settings'] = wasapi_settings  # Use WasapiSettings instead of a dictionary
+            
+            # No extra_settings for Windows here — removed.
 
             self.stream = sd.OutputStream(**stream_kwargs)
             self.stream.start()
-
+            
             print("[TTS Output] Successfully initialized audio")
-
+            
         except Exception as e:
             print(f"[TTS Output] Error initializing audio: {e}")
             if self.stream:
                 self.stream.close()
                 self.stream = None
 
-
     async def initialize(self):
-        """Initialize audio output"""
+        """Initialize audio output (async)"""
         if self.stream and self.stream.active:
             return
 
@@ -216,22 +204,16 @@ class AudioOutput:
             device_idx, device_info = self._find_output_device()
             self.device_rate = int(device_info['default_samplerate'])
             
-            # Create output stream with Windows-specific optimizations
             stream_kwargs = {
                 'device': device_idx,
                 'samplerate': self.device_rate,
                 'channels': 2,  # Use stereo output
                 'dtype': np.float32,
-                'latency': 'low'  # Keep low latency for responsiveness
+                'latency': 'low'
             }
             
-            # Use WASAPI on Windows for better performance
-            if platform.system() == 'Windows':
-                stream_kwargs['extra_settings'] = {
-                    'wasapi_exclusive': False,  # Shared mode for compatibility
-                    'wasapi_buffer_size': 480   # Smaller buffer for lower latency
-                }
-            
+            # No extra_settings for Windows here — removed.
+
             self.stream = sd.OutputStream(**stream_kwargs)
             self.stream.start()
             
@@ -265,11 +247,9 @@ class AudioOutput:
                     
                     # Resample if needed using resample_poly for better quality
                     if self.device_rate != self.input_rate:
-                        # Calculate resampling parameters
                         gcd_val = np.gcd(self.device_rate, self.input_rate)
                         up = self.device_rate // gcd_val
                         down = self.input_rate // gcd_val
-                        # Use resample_poly with small chunk size for better real-time performance
                         audio_data = signal.resample_poly(audio_data, up, down, padtype='line')
                     
                     # Play audio
@@ -277,12 +257,12 @@ class AudioOutput:
                         self.stream.write(audio_data)
                 else:
                     # Brief sleep when queue is empty
-                    time.sleep(0.001)  # Keep original sleep time for responsiveness
+                    time.sleep(0.001)
                     
             except Exception as e:
                 print(f"[TTS Output] Error in playback thread: {e}")
-                self.playing = False # Ensure thread exits on error
-                break # Exit thread on playback error
+                self.playing = False
+                break  # Exit thread on playback error
 
     async def play_chunk(self, chunk):
         """Queue an audio chunk for playback"""
@@ -320,7 +300,7 @@ class AudioOutput:
 
     def close(self):
         """Clean up audio resources and ensure thread termination"""
-        print("[TTS Output] AudioOutput.close() called - start") # Debug log
+        print("[TTS Output] AudioOutput.close() called - start")
         self.playing = False
         # Signal the thread to stop
         if self.play_thread and self.play_thread.is_alive():
@@ -338,4 +318,4 @@ class AudioOutput:
                 print(f"[TTS Output] Error closing stream: {e}")
             finally:
                 self.stream = None
-        print("[TTS Output] AudioOutput.close() finished") # Debug log
+        print("[TTS Output] AudioOutput.close() finished")

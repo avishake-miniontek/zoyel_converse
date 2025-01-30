@@ -8,21 +8,22 @@ import sys
 import json
 import os
 from collections import deque
-from urllib.parse import urlparse, parse_qs  # Import for URI parsing
+from urllib.parse import urlparse, parse_qs
 
 ################################################################################
 # GPU SELECTION
 ################################################################################
 
-# Set CUDA_VISIBLE_DEVICES before importing any ML frameworks
 def select_gpu():
-    """Select best GPU and set CUDA_VISIBLE_DEVICES"""
+    """Select best GPU and set CUDA_VISIBLE_DEVICES before importing ML frameworks."""
     try:
         import subprocess
         
         # Run nvidia-smi to get memory info
         result = subprocess.run(
-            ['nvidia-smi', '--query-gpu=index,memory.total,memory.used,memory.free', '--format=csv,noheader,nounits'],
+            ['nvidia-smi',
+             '--query-gpu=index,memory.total,memory.used,memory.free',
+             '--format=csv,noheader,nounits'],
             capture_output=True,
             text=True,
             check=True
@@ -32,10 +33,9 @@ def select_gpu():
         max_free_memory = 0
         min_required_gb = 4
         
-        # Parse each line of nvidia-smi output
         for line in result.stdout.strip().split('\n'):
             gpu_id, total, used, free = map(int, line.strip().split(', '))
-            free_memory_gb = free / 1024.0  # MiB to GB for display
+            free_memory_gb = free / 1024.0  # Convert MiB to GB
             print(f"GPU {gpu_id}: {free_memory_gb:.2f}GB free VRAM")
             
             if free >= (min_required_gb * 1024) and free > max_free_memory:
@@ -64,33 +64,30 @@ from src.audio_core import AudioCore
 with open('config.json', 'r') as f:
     CONFIG = json.load(f)
 
-# Check if model paths exist and are accessible
+# Check if model paths exist
 whisper_path = CONFIG['server']['models']['whisper']['path']
 kokoro_path = CONFIG['server']['models']['kokoro']['path']
 
 if not os.path.exists(whisper_path):
     print(f"Error: Whisper model path does not exist: {whisper_path}")
-    print("Please update the whisper.path in config.json to point to your Whisper model directory")
+    print("Please update whisper.path in config.json.")
     sys.exit(1)
 
 if not os.path.exists(kokoro_path):
     print(f"Error: Kokoro model path does not exist: {kokoro_path}")
-    print("Please update the kokoro.path in config.json to point to your Kokoro model directory")
+    print("Please update kokoro.path in config.json.")
     sys.exit(1)
-
-# Get trigger word from config (always use lowercase for comparison)
-TRIGGER_WORD = CONFIG['assistant']['name'].lower()
 
 # Set device based on whether GPU was selected
 device = "cuda:0" if has_gpu else "cpu"
 torch_dtype = torch.float16 if has_gpu else torch.float32
 
 MODEL_PATH = CONFIG['server']['models']['whisper']['path']
+TRIGGER_WORD = CONFIG['assistant']['name'].lower()
 
-print(f"Device set to use {device}")
+print(f"Device set to: {device}")
 print("Loading ASR model and processor...")
 
-# Load model and processor
 model = AutoModelForSpeechSeq2Seq.from_pretrained(
     MODEL_PATH,
     torch_dtype=torch_dtype,
@@ -111,13 +108,12 @@ asr_pipeline = pipeline(
 )
 
 print("Loading TTS model...")
-# Initialize Kokoro TTS pipeline
 voice_name = CONFIG['server']['models']['kokoro']['voice_name']
-print(f"Using voice name: {voice_name}")
+print(f"Using voice: {voice_name}")
 
-# Initialize Kokoro pipeline with American English ('a') as default
-tts_pipeline = KPipeline(lang_code='a')
-# Keep TTS model in full precision since it expects float32 inputs
+# Initialize Kokoro TTS pipeline
+tts_pipeline = KPipeline(lang_code='a')  # 'a' for American English
+# Keep TTS model in float32
 tts_pipeline.model = tts_pipeline.model.to(device=device, dtype=torch.float32)
 
 ################################################################################
@@ -126,40 +122,35 @@ tts_pipeline.model = tts_pipeline.model.to(device=device, dtype=torch.float32)
 
 class AudioServer:
     def __init__(self):
-        # Load configuration first
         with open('config.json', 'r') as f:
             self.config = json.load(f)
-            
-        # Initialize audio core with safe defaults
+        
         self.audio_core = AudioCore()
-        self.audio_core.noise_floor = -96.0  # Safe default until client connects
+        # Initialize defaults
+        self.audio_core.noise_floor = -96.0
         self.audio_core.min_floor = -96.0
-        self.audio_core.max_floor = -36.0  # 60dB range
+        self.audio_core.max_floor = -36.0
         self.audio_core.rms_level = -96.0
         self.audio_core.peak_level = -96.0
         
-        # Voice filtering configuration
-        self.enable_voice_filtering = False  # Default to disabled
-        
-        # Client's calibrated noise floor (will be set when client connects)
+        self.enable_voice_filtering = False
         self.client_noise_floor = -96.0
         
-        # Voice profile management
         self.current_voice_profile = None
         self.voice_profile_timestamp = None
         
-        # Transcript filtering and debouncing
+        # Transcript filtering & debouncing
         self.transcript_history = deque(maxlen=10)
-        self.min_confidence = 0.4  # Base confidence threshold
-        self.short_phrase_confidence = 0.8  # Higher threshold for short phrases
+        self.min_confidence = 0.4
+        self.short_phrase_confidence = 0.8
         self.last_transcript = ""
         self.last_transcript_time = 0
-        self.min_repeat_interval = 2.0  # seconds between identical transcripts
+        self.min_repeat_interval = 2.0
 
     def should_process_transcript(self, transcript, confidence, speech_duration):
         """
-        Decide if the server should accept the transcript. This helps reject
-        false positives, repeated transcripts, very short nonsense, etc.
+        Decide if the server should accept the transcript.
+        Reject short nonsense or duplicates, etc.
         """
         if not transcript:
             return False
@@ -167,14 +158,10 @@ class AudioServer:
         transcript = transcript.strip().lower()
         now = time.time()
         
-        # Basic validations
         if len(transcript) <= 1:
             return False
 
-        # Skip certain common short filler words and partial transcripts
-        skip_phrases = [
-            "thank you."
-        ]
+        skip_phrases = ["thank you."]
         if transcript in skip_phrases:
             return False
 
@@ -184,55 +171,43 @@ class AudioServer:
             if word_count <= 2 and TRIGGER_WORD not in transcript:
                 return False
 
-        # Debounce identical transcripts with longer interval
+        # Debounce identical transcripts
         if transcript == self.last_transcript:
-            if now - self.last_transcript_time < self.min_repeat_interval * 2:  # Double the interval
+            if now - self.last_transcript_time < self.min_repeat_interval * 2:
                 return False
 
-        # Check recent history for similar transcripts (more flexible matching)
+        # Check recent history
         for past_transcript in self.transcript_history:
-            # Convert to sets of words for partial matching
             past_words = set(past_transcript.lower().split())
             current_words = set(transcript.split())
-            
-            # If 80% or more words match, consider it a duplicate
-            if len(past_words) > 0 and len(current_words) > 0:
+            if past_words and current_words:
                 common_words = past_words.intersection(current_words)
                 similarity = len(common_words) / max(len(past_words), len(current_words))
                 if similarity > 0.8:
                     return False
 
-        # Passed all filters
+        # Passed all checks
         self.transcript_history.append(transcript)
         self.last_transcript = transcript
         self.last_transcript_time = now
         return True
 
 class ClientSettingsManager:
-    """
-    Manages client-specific AudioServer instances.
-    """
+    """Manage client-specific AudioServer instances."""
     def __init__(self):
         self.client_settings = {}
 
     def get_audio_server(self, client_id):
-        """
-        Retrieves or creates an AudioServer instance for a given client ID.
-        """
         if client_id not in self.client_settings:
-            print(f"Creating new AudioServer instance for client ID: {client_id}")
+            print(f"Creating new AudioServer for client {client_id}")
             self.client_settings[client_id] = AudioServer()
         return self.client_settings[client_id]
 
     def remove_client(self, client_id):
-        """
-        Removes a client's AudioServer instance when they disconnect.
-        """
         if client_id in self.client_settings:
-            print(f"Removing AudioServer instance for client ID: {client_id}")
+            print(f"Removing AudioServer instance for {client_id}")
             del self.client_settings[client_id]
 
-# Global ClientSettingsManager instance
 client_settings_manager = ClientSettingsManager()
 
 ################################################################################
@@ -240,7 +215,10 @@ client_settings_manager = ClientSettingsManager()
 ################################################################################
 
 async def process_audio_chunk(websocket, chunk, fade_in=None, fade_out=None, fade_samples=32):
-    """Send a single chunk of TTS audio to the client, applying fades if needed."""
+    """
+    Send a single chunk of TTS audio to the client, optionally applying fades.
+    We prefix the chunk with b'TTS:' so the client recognizes it as TTS data.
+    """
     try:
         if fade_in is not None:
             chunk[:fade_samples] *= fade_in
@@ -254,29 +232,28 @@ async def process_audio_chunk(websocket, chunk, fade_in=None, fade_out=None, fad
 
 async def handle_tts(websocket, text, client_id):
     """
-    Handle text-to-speech request and stream audio chunks back to the client.
-    Uses the Kokoro TTS pipeline in streaming fashion for lower latency.
+    Handle TTS requests by generating audio with Kokoro TTS, chunking the result,
+    and sending each chunk to the client, followed by b'TTS_END'.
     """
     try:
         server = client_settings_manager.get_audio_server(client_id)
-        print(f"\n[TTS] Generating audio for text chunk (client {client_id}): '{text}'")
+        print(f"[TTS] Generating audio for (client {client_id}): '{text}'")
 
-        # Generate audio using the Kokoro pipeline
+        # Generate TTS audio
         generator = tts_pipeline(text, voice=f'{voice_name}_bella', speed=1)
         audio_chunks = []
-        
-        # Collect all audio chunks and ensure float32
+
         for _, _, audio in generator:
-            # Convert PyTorch tensor to NumPy array in float32
+            # Convert to numpy float32
             if torch.is_tensor(audio):
                 audio = audio.detach().cpu().numpy()
             audio_chunks.append(audio.astype(np.float32))
         
-        # Concatenate all chunks
+        # Concatenate all partial TTS segments
         audio = np.concatenate(audio_chunks)
-        print(f"[TTS] Generated {len(audio)} samples ({len(audio)/24000:.2f}s at 24kHz)")
-
         audio = np.clip(audio, -1.0, 1.0).astype(np.float32)
+        print(f"[TTS] Generated {len(audio)} samples "
+              f"({len(audio)/24000:.2f} sec at 24kHz)")
 
         FRAME_SIZE = 512
         fade_samples = 32
@@ -285,30 +262,29 @@ async def handle_tts(websocket, text, client_id):
 
         tasks = []
         
-        # Send initial chunk with fade in
+        # First chunk with fade-in
         if len(audio) >= FRAME_SIZE:
             first_chunk = audio[:FRAME_SIZE].copy()
             tasks.append(process_audio_chunk(websocket, first_chunk, fade_in=fade_in))
 
-        # Process the rest
+        # Send subsequent frames, fade-out on last
         for i in range(FRAME_SIZE, len(audio) - FRAME_SIZE, FRAME_SIZE):
             chunk = audio[i:i + FRAME_SIZE].copy()
-            # Fade out on the last chunk
             if i + FRAME_SIZE >= len(audio) - FRAME_SIZE:
                 tasks.append(process_audio_chunk(websocket, chunk, fade_out=fade_out))
             else:
                 tasks.append(process_audio_chunk(websocket, chunk))
 
-            # Process chunks in batches to ensure order
+            # Send in batches to preserve order
             if len(tasks) >= 8:
                 await asyncio.gather(*tasks)
                 tasks = []
 
-        # Process any remaining
         if tasks:
             await asyncio.gather(*tasks)
 
-        await websocket.send(b'TTS_END')
+        # **This is crucial**: tell client we have reached the end of this TTS utterance
+        await websocket.send(b"TTS_END")
         
     except Exception as e:
         print(f"TTS Error: {e}")
@@ -319,11 +295,13 @@ async def handle_tts(websocket, text, client_id):
 ################################################################################
 
 def verify_api_key(websocket, client_id):
-    """Verify the API key and client ID from the websocket connection URI."""
+    """
+    Verifies the API key & client ID from the websocket connection URI.
+    """
     try:
         server_api_key = CONFIG['server']['websocket']['api_key']
         if not server_api_key:
-            print("No server API key configured")
+            print("No server API key configured.")
             return False
 
         path_string = None
@@ -344,22 +322,21 @@ def verify_api_key(websocket, client_id):
         parsed_uri = urlparse(path_string)
         query_params = parse_qs(parsed_uri.query)
 
-        # Client API key
+        # Get client API key from query
         client_api_key_list = query_params.get('api_key', [])
         if not client_api_key_list:
-            print("No API key provided in URI query parameters")
+            print("No API key provided in query params.")
             return False
         client_api_key = client_api_key_list[0]
 
-        # Compare
         if client_api_key != server_api_key:
-            print("Client API key does not match server API key")
+            print("Client API key does not match server API key.")
             return False
 
-        # Verify Client ID
+        # Check client ID
         client_id_list = query_params.get('client_id', [])
         if not client_id_list:
-            print("No Client ID provided in URI query parameters")
+            print("No Client ID in query params.")
             return False
         client_id_uri = client_id_list[0]
         if client_id_uri != str(client_id):
@@ -369,7 +346,7 @@ def verify_api_key(websocket, client_id):
         return True
 
     except Exception as e:
-        print(f"Error verifying API key and client ID from URI: {e}")
+        print(f"Error verifying API key: {e}")
         return False
 
 ################################################################################
@@ -378,8 +355,9 @@ def verify_api_key(websocket, client_id):
 
 async def transcribe_audio(websocket):
     """
-    Receives audio chunks from the client, processes them in real-time using
-    AudioCore's VAD and speech detection, and sends transcripts back to the client.
+    Receives microphone audio from the client, runs ASR, and returns transcripts.
+    Also handles TTS requests from the client, sending partial TTS data
+    with a TTS_END marker at the end of each utterance.
     """
     client_id = None
     server = None
@@ -398,31 +376,31 @@ async def transcribe_audio(websocket):
 
         # Verify API
         if not verify_api_key(websocket, client_id):
-            print("Client connection rejected: Invalid API key or Client ID")
+            print("Client connection rejected: invalid API key or Client ID.")
             await websocket.send("AUTH_FAILED")
             return
         
-        # Auth success
         await websocket.send("AUTH_OK")
-        print(f"Client authenticated. Client ID: {client_id}.")
+        print(f"Client authenticated. ID: {client_id}")
 
-        # Get or create AudioServer for this client
+        # Retrieve or create an AudioServer for this client
         server = client_settings_manager.get_audio_server(client_id)
 
         async for message in websocket:
             if isinstance(message, bytes):
+                # Microphone audio from client
                 try:
-                    # Convert to float32 and process through AudioCore
-                    chunk_data, sr = server.audio_core.bytes_to_float32_audio(message, sample_rate=16000)
+                    chunk_data, sr = server.audio_core.bytes_to_float32_audio(
+                        message, sample_rate=16000
+                    )
                     result = server.audio_core.process_audio(chunk_data)
 
-                    # Only run ASR when we have a complete utterance
-                    if result.get('is_complete', False) and result.get('is_speech', False):
-                        # Validate audio data
+                    # Once we have a complete utterance
+                    if result.get('is_complete') and result.get('is_speech'):
                         audio = result.get('audio')
                         if audio is not None and len(audio) > 0:
                             try:
-                                # Run ASR on the complete utterance
+                                # Run Whisper ASR
                                 asr_result = asr_pipeline(
                                     {"array": audio, "sampling_rate": sr},
                                     return_timestamps=True,
@@ -432,91 +410,81 @@ async def transcribe_audio(websocket):
                                         "use_cache": False
                                     }
                                 )
-
                                 transcript = asr_result["text"].strip()
                                 confidence = asr_result.get("confidence", 0.0)
 
-                                # Process and send if it passes filters
-                                if transcript and server.should_process_transcript(transcript, confidence, result['speech_duration']):
-                                    try:
-                                        if isinstance(transcript, bytes):
-                                            transcript = transcript.decode('utf-8')
-                                        transcript_str = str(transcript)
-                                        print(f"\nTranscript: '{transcript_str}' (client: {client_id})")
-                                        await websocket.send(transcript_str)
-                                    except Exception as e:
-                                        print(f"Error sending transcript: {e}")
-                                else:
-                                    pass  # Silently ignore filtered transcripts
+                                # Filter and send transcripts
+                                if transcript and server.should_process_transcript(
+                                    transcript,
+                                    confidence,
+                                    result['speech_duration']
+                                ):
+                                    print(f"[ASR] Transcript from {client_id}: '{transcript}'")
+                                    await websocket.send(transcript)
                             except Exception as e:
                                 print(f"ASR Error: {e}")
 
                 except Exception as e:
-                    print(f"Error processing audio chunk from client {client_id}: {e}")
+                    print(f"Error processing audio from {client_id}: {e}")
 
             elif isinstance(message, str):
-                # Control messages
+                # Control / TTS messages
                 if message.startswith("NOISE_FLOOR:"):
-                    """
-                    The client sends an initial, measured noise floor.
-                    We update the server's AudioCore to align the thresholds.
-                    """
                     try:
                         parts = message.split(":")
                         noise_floor = float(parts[1])
-                        message_client_id = parts[2] if len(parts) > 2 else None
+                        msg_client_id = parts[2] if len(parts) > 2 else None
 
-                        if message_client_id != client_id:
-                            print(f"Warning: Client ID mismatch in NOISE_FLOOR. Expected {client_id}, got {message_client_id}")
+                        if msg_client_id != client_id:
+                            print(f"Noise floor client ID mismatch. Expected {client_id}, got {msg_client_id}")
                             continue
 
                         if -120 < noise_floor < 0:
                             server.client_noise_floor = noise_floor
-                            server.audio_core.noise_floor = float(noise_floor)
-                            server.audio_core.min_floor = float(noise_floor - 5)
-                            server.audio_core.max_floor = float(noise_floor + 45)
-
-                            print(f"\nClient {client_id} noise floor set to: {noise_floor:.1f} dB")
+                            server.audio_core.noise_floor = noise_floor
+                            server.audio_core.min_floor = noise_floor - 5
+                            server.audio_core.max_floor = noise_floor + 45
+                            print(f"Set client {client_id} noise floor to {noise_floor:.1f} dB")
                             await websocket.send("READY")
-
                         else:
-                            print(f"Invalid noise floor from client {client_id}: {noise_floor}")
-                            await websocket.send("ERROR:Invalid noise floor value")
+                            print(f"Invalid noise floor from {client_id}: {noise_floor}")
+                            await websocket.send("ERROR:Invalid noise floor")
 
                     except Exception as e:
-                        print(f"Error processing noise floor message from {client_id}: {e}")
-                        await websocket.send("ERROR:Failed to process noise floor")
+                        print(f"Error processing noise floor from {client_id}: {e}")
+                        await websocket.send("ERROR:Noise floor processing failed")
 
                 elif message.strip() == "VOICE_FILTER_ON":
                     server.enable_voice_filtering = True
-                    print(f"\nVoice filtering enabled for client {client_id}")
+                    print(f"Voice filtering ON for {client_id}")
                 elif message.strip() == "VOICE_FILTER_OFF":
                     server.enable_voice_filtering = False
                     server.current_voice_profile = None
                     server.voice_profile_timestamp = None
-                    print(f"\nVoice filtering disabled for client {client_id}")
+                    print(f"Voice filtering OFF for {client_id}")
                 elif message.strip() == "RESET":
-                    print(f"Buffer reset by client {client_id}.")
+                    print(f"Buffer reset by {client_id}")
                 elif message.strip() == "EXIT":
-                    print(f"Client {client_id} requested exit. Closing connection.")
+                    print(f"Client {client_id} requested exit.")
                     break
                 elif message.startswith("TTS:"):
+                    # TTS request
                     text = message[4:].strip()
-                    print(f"TTS request from client {client_id}: {text}")
+                    print(f"Received TTS request from {client_id}: {text}")
                     asyncio.create_task(handle_tts(websocket, text, client_id))
                 else:
-                    print(f"Unknown message from client {client_id}: {message}")
+                    print(f"Unknown message from {client_id}: {message}")
 
     except websockets.ConnectionClosed as e:
         print(f"Client {client_id} disconnected: {e}")
     except Exception as e:
-        print(f"Server error for client {client_id}: {e}")
+        print(f"Server error for {client_id}: {e}")
     finally:
         if server and server.audio_core:
             server.audio_core.close()
         if client_id:
             client_settings_manager.remove_client(client_id)
-        print(f"Cleaned up server resources for client {client_id}")
+        print(f"Cleaned up for client {client_id}")
 
 ################################################################################
 # MAIN
@@ -527,7 +495,7 @@ async def main():
         host = "0.0.0.0"
         port = CONFIG['server']['websocket']['port']
         async with websockets.serve(transcribe_audio, host, port):
-            print(f"WebSocket server started on ws://{host}:{port}")
+            print(f"Server running at ws://{host}:{port}")
             await asyncio.Future()  # keep running
     except Exception as e:
         print(f"Server startup error: {e}")

@@ -25,24 +25,13 @@ class AudioOutput:
         self.input_rate = 24000  # TTS output rate in Hz
         self.device_rate = None  # Will detect from the actual device
         self.stream = None
-        self.audio_queue = deque()
+        self.audio_queue = deque(maxlen=32)  # Limit queue size to prevent buildup
         self.playing = False
         self.play_thread = None
         self.current_device = None
-        self.resampler = None
         self.current_utterance = []  # Buffer for current TTS utterance
         self.partial_frame = b''  # Buffer for incomplete frames
         print("Audio output initialized")
-
-    def _init_resampler(self):
-        """Initialize and warm up the resampler."""
-        if self.resampler is None and self.device_rate is not None and self.device_rate != self.input_rate:
-            import samplerate
-            self.resampler = samplerate.Resampler('sinc_best', channels=2)
-            # Warm up the resampler with a small buffer
-            warmup_data = np.zeros((512, 2), dtype=np.float32)
-            ratio = self.device_rate / self.input_rate
-            self.resampler.process(warmup_data, ratio)
 
     def _parse_frame(self, data):
         """Parse a frame from the data buffer. Returns (frame, remaining_data)."""
@@ -137,9 +126,10 @@ class AudioOutput:
                 'samplerate': self.device_rate,
                 'channels': 2,
                 'dtype': np.float32,
-                'latency': 'high',  # Use high latency for more stable playback
+                'latency': 'low' if platform.system() == 'Windows' else 'high',  # Lower latency on Windows
                 'callback': None,   # No callback needed, we use write mode
-                'finished_callback': None
+                'finished_callback': None,
+                'blocksize': 1024 if platform.system() == 'Windows' else None  # Smaller blocks on Windows
             }
 
             print(f"Opening stream with settings: {stream_kwargs}")
@@ -163,7 +153,6 @@ class AudioOutput:
         self.device_rate = int(device_info['default_samplerate'])
         print(f"[AUDIO] Device rate: {self.device_rate} Hz, Input rate: {self.input_rate} Hz")
         self._open_stream(device_idx)
-        self._init_resampler()
 
     async def initialize(self):
         """Initialize audio output asynchronously."""
@@ -174,26 +163,25 @@ class AudioOutput:
         self.device_rate = int(device_info['default_samplerate'])
         print(f"[AUDIO] Device rate: {self.device_rate} Hz, Input rate: {self.input_rate} Hz")
         self._open_stream(device_idx)
-        self._init_resampler()
 
     def _process_audio_data(self, audio_bytes):
         """Process raw audio bytes into playable audio data."""
         try:
-            process_start = time.time()
-            # Convert to float32 stereo
+            # Convert to float32
             audio_data = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             if audio_data.size == 0:
                 return None
 
-            # Convert to stereo
-            audio_data = np.column_stack((audio_data, audio_data))
-
-            # Resample if needed
+            # Resample if needed (before stereo conversion for efficiency)
             if self.device_rate != self.input_rate:
-                ratio = self.device_rate / self.input_rate
-                self._init_resampler()
-                audio_data = self.resampler.process(audio_data, ratio)
+                gcd = np.gcd(self.device_rate, self.input_rate)
+                up = self.device_rate // gcd
+                down = self.input_rate // gcd
+                audio_data = signal.resample_poly(audio_data, up, down)
 
+            # Convert to stereo after resampling (more efficient)
+            audio_data = np.column_stack((audio_data, audio_data))
+            
             return audio_data
         except Exception as e:
             print(f"[AUDIO] Error processing audio data: {e}")
@@ -346,4 +334,3 @@ class AudioOutput:
         device_idx, device_info = self._find_output_device(device_name)
         self.device_rate = int(device_info['default_samplerate'])
         self._open_stream(device_idx)
-        self._init_resampler()  # Initialize resampler for new device rate

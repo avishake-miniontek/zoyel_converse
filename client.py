@@ -88,9 +88,12 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
         # Create resampler only if needed
         resampler = None
         if needs_resampling:
-            resampler = samplerate.Resampler('sinc_best')
-            ratio = 16000 / rate
-
+            # Use scipy's resample_poly for more efficient resampling
+            from scipy import signal
+            gcd = np.gcd(16000, rate)
+            up = 16000 // gcd
+            down = rate // gcd
+            
         while True:
             try:
                 # Read audio from mic
@@ -112,11 +115,8 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
                 # Resample and convert to int16 for sending to server
                 if needs_resampling:
                     try:
-                        resampled_data = resampler.process(
-                            audio_data,
-                            ratio,
-                            end_of_input=False
-                        )
+                        # Use resample_poly for more efficient resampling
+                        resampled_data = signal.resample_poly(audio_data, up, down)
                         final_data = np.clip(resampled_data * 32768.0, -32768, 32767).astype(np.int16)
                     except Exception as e:
                         print(f"Error during resampling: {e}")

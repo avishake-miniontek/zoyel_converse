@@ -99,10 +99,9 @@ class AudioOutput:
                     if audio_data is None:
                         print("[AUDIO] Skipping None audio data")
                     if not self.stream or not self.stream.active:
-                        print("[AUDIO] Stream not active, attempting recovery")
-                        await self._open_stream(self.current_device['index'])
-                        if self.stream and self.stream.active and audio_data is not None:
-                            await self.loop.run_in_executor(None, self.stream.write, audio_data)
+                        print("[AUDIO] Stream not active")
+                        # Don't try to recover here - let start_stream handle it
+                        await asyncio.sleep(0.1)
 
             except Exception as e:
                 print(f"[AUDIO] Error in playback loop: {e}")
@@ -115,7 +114,7 @@ class AudioOutput:
     async def start_stream(self):
         """Start the audio stream and playback loop."""
         try:
-            # Stop any existing playback
+            # Stop any existing playback task
             if self.playing:
                 self.playing = False
                 if self.playback_task:
@@ -123,33 +122,30 @@ class AudioOutput:
                         await self.playback_task
                     except asyncio.CancelledError:
                         pass
-                if self.audio_queue:
-                    while not self.audio_queue.empty():
-                        try:
-                            self.audio_queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
 
-            # Initialize fresh stream
-            await self.initialize()
+            # Clear existing queue if any
+            if self.audio_queue:
+                while not self.audio_queue.empty():
+                    try:
+                        self.audio_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+
+            # Initialize stream if not already initialized
+            if not self.stream or not self.stream.active:
+                await self.initialize()
 
             # Create new queue and start playback
             self.loop = asyncio.get_running_loop()
             self.audio_queue = asyncio.Queue()
             self.playing = True
             self.playback_task = asyncio.create_task(self._play_audio_loop())
-            print("Started new playback loop")
+            print("Started playback loop")
 
         except Exception as e:
             print(f"Error starting stream: {e}")
-            # Try to recover
-            self.stream = None
-            await self.initialize()
-            self.playing = True
-            self.loop = asyncio.get_running_loop()
-            self.audio_queue = asyncio.Queue()
-            self.playback_task = asyncio.create_task(self._play_audio_loop())
-            print("Recovered stream after error")
+            import traceback
+            print(traceback.format_exc())
 
     async def pause(self):
         """Stop playback and clear the queue."""
@@ -184,15 +180,29 @@ class AudioOutput:
     async def set_device_by_name(self, device_name):
         """Change the output device by name."""
         print(f"\nChanging output device to: {device_name}")
+        # Only pause playback, don't close stream yet
         await self.pause()
-        if self.stream:
-            self.stream.close()
-            self.stream = None
-
+        
+        # Find new device info
         device_idx, device_info = self._find_output_device(device_name)
-        self.device_rate = int(device_info['default_samplerate'])
-        await self._open_stream(device_idx)
-        self._init_resampler()  # Initialize resampler for new device rate
+        new_rate = int(device_info['default_samplerate'])
+        
+        # Only close and reopen stream if device actually changed
+        if (not self.stream or 
+            not self.stream.active or 
+            self.device_rate != new_rate or 
+            self.current_device['name'] != device_name):
+            
+            if self.stream:
+                self.stream.close()
+                self.stream = None
+                await asyncio.sleep(0.1)  # Give time for cleanup
+            
+            self.device_rate = new_rate
+            await self._open_stream(device_idx)
+            self._init_resampler()  # Initialize resampler for new device rate
+        else:
+            print("Device unchanged, keeping existing stream")
 
     async def play_chunk(self, chunk):
         """Queue a chunk of audio data for playback."""
@@ -400,12 +410,6 @@ class AudioOutput:
     async def _open_stream(self, device_idx):
         """Open and start the audio output stream."""
         try:
-            # Close any existing stream first
-            if self.stream:
-                self.stream.close()
-                self.stream = None
-                await asyncio.sleep(0.1)  # Give time for cleanup
-
             stream_kwargs = {
                 'device': device_idx,
                 'samplerate': self.device_rate,
@@ -419,13 +423,20 @@ class AudioOutput:
             print(f"Opening stream with settings: {stream_kwargs}")
             self.stream = sd.OutputStream(**stream_kwargs)
             self.stream.start()
-            await asyncio.sleep(0.1)  # Give stream time to fully initialize
+            # Give extra time for Windows to initialize
+            if platform.system() == 'Windows':
+                await asyncio.sleep(0.5)  # Longer delay for Windows
+            else:
+                await asyncio.sleep(0.2)
             print(f"Stream started successfully")
             
             # Warmup the stream
             await self._warmup_stream()
 
         except Exception as e:
+            print(f"Failed to open stream: {e}")
+            import traceback
+            print(traceback.format_exc())
             if self.stream:
                 self.stream.close()
                 self.stream = None

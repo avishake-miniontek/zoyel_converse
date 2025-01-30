@@ -233,7 +233,7 @@ async def receive_transcripts(websocket, audio_interface):
                     # Queue audio chunk immediately for playback
                     await audio_output.play_chunk(msg)
                 elif msg == b'TTS_END':
-                    pass
+                    print("[TTS] End of utterance received")
                 continue
 
             # Handle text messages

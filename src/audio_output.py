@@ -27,14 +27,19 @@ class AudioOutput:
         self.input_rate = 24000  # TTS output rate in Hz
         self.device_rate = None  # Will detect from the actual device
         self.stream = None
-        self.audio_queue = None  # Will be initialized as asyncio.Queue
+        self.audio_queue = None  # Queue for processed audio ready for playback
+        self.chunk_queue = None  # Queue for incoming raw audio chunks
+        self.frame_queue = None  # Queue for parsed frames
         self.playing = False
         self.playback_task = None
+        self.processor_task = None  # Task for processing incoming chunks
+        self.frame_task = None  # Task for parsing frames
         self.current_device = None
         self.resampler = None
         self.current_utterance = []  # Buffer for current TTS utterance
         self.partial_frame = b''  # Buffer for incomplete frames
         self.loop = None  # Will store the event loop
+        self.max_buffer_chunks = 1024  # Maximum number of chunks to buffer (increased to handle delays)
         print("Audio output initialized")
 
     def initialize_sync(self):
@@ -114,33 +119,41 @@ class AudioOutput:
     async def start_stream(self):
         """Start the audio stream and playback loop."""
         try:
-            # Stop any existing playback task
+            # Stop any existing tasks
             if self.playing:
                 self.playing = False
-                if self.playback_task:
-                    try:
-                        await self.playback_task
-                    except asyncio.CancelledError:
-                        pass
+                for task in [self.playback_task, self.processor_task, self.frame_task]:
+                    if task:
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
 
-            # Clear existing queue if any
-            if self.audio_queue:
-                while not self.audio_queue.empty():
-                    try:
-                        self.audio_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
+            # Clear existing queues
+            for queue in [self.audio_queue, self.chunk_queue, self.frame_queue]:
+                if queue:
+                    while not queue.empty():
+                        try:
+                            queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
 
             # Initialize stream if not already initialized
             if not self.stream or not self.stream.active:
                 await self.initialize()
 
-            # Create new queue and start playback
+            # Create new queues and start tasks
             self.loop = asyncio.get_running_loop()
             self.audio_queue = asyncio.Queue()
+            self.chunk_queue = asyncio.Queue(maxsize=self.max_buffer_chunks)
+            self.frame_queue = asyncio.Queue()
             self.playing = True
+            
+            # Start tasks in order: frame parser -> processor -> playback
+            self.frame_task = asyncio.create_task(self._parse_frames_loop())
+            self.processor_task = asyncio.create_task(self._process_frames_loop())
             self.playback_task = asyncio.create_task(self._play_audio_loop())
-            print("Started playback loop")
+            print("Started frame parsing, processing, and playback loops")
 
         except Exception as e:
             print(f"Error starting stream: {e}")
@@ -148,21 +161,26 @@ class AudioOutput:
             print(traceback.format_exc())
 
     async def pause(self):
-        """Stop playback and clear the queue."""
+        """Stop playback and clear queues."""
         self.playing = False
-        if self.playback_task:
-            try:
-                await self.playback_task
-            except asyncio.CancelledError:
-                pass
+        for task in [self.playback_task, self.processor_task, self.frame_task]:
+            if task:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        
         if self.stream and self.stream.active:
             self.stream.stop()
-        if self.audio_queue:
-            while not self.audio_queue.empty():
-                try:
-                    self.audio_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
+            
+        # Clear all queues
+        for queue in [self.audio_queue, self.chunk_queue, self.frame_queue]:
+            if queue:
+                while not queue.empty():
+                    try:
+                        queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
 
     async def close(self):
         """Clean up resources."""
@@ -205,29 +223,94 @@ class AudioOutput:
             print("Device unchanged, keeping existing stream")
 
     async def play_chunk(self, chunk):
-        """Queue a chunk of audio data for playback."""
+        """Queue a chunk of audio data for processing."""
         try:
-            # Append new data to any partial frame from previous chunk
-            data = self.partial_frame + chunk
-            self.partial_frame = b''
-            
-            while data:
-                frame, data = self._parse_frame(data)
-                if frame is None:
-                    # Store remaining data for next chunk
-                    self.partial_frame = data
-                    break
+            if self.chunk_queue and self.playing:
+                try:
+                    # Use try_put to avoid blocking if queue is full
+                    await self._try_put_chunk(chunk)
+                except asyncio.QueueFull:
+                    print("[AUDIO] Warning: Chunk queue full, dropping chunk")
+        except Exception as e:
+            print(f"[AUDIO] Error queueing chunk: {e}")
+            import traceback
+            print(traceback.format_exc())
+
+    async def _try_put_chunk(self, chunk):
+        """Try to put a chunk in the queue with a timeout."""
+        try:
+            await asyncio.wait_for(self.chunk_queue.put(chunk), timeout=0.1)
+        except asyncio.TimeoutError:
+            raise asyncio.QueueFull()
+
+    async def _parse_frames_loop(self):
+        """Background task to parse frames from chunks."""
+        print("[AUDIO] Frame parser started")
+        
+        while self.playing:
+            try:
+                # Get chunk with timeout
+                try:
+                    chunk = await asyncio.wait_for(self.chunk_queue.get(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    continue
+
+                # Parse frames in executor to avoid blocking
+                if self.loop is None:
+                    self.loop = asyncio.get_running_loop()
                 
-                frame_type, frame_data = frame
+                # Process chunk and get frames
+                data = self.partial_frame + chunk
+                self.partial_frame = b''
+                
+                while data:
+                    frame, data = await self.loop.run_in_executor(None, self._parse_frame, data)
+                    if frame is None:
+                        self.partial_frame = data
+                        break
+                    
+                    await self.frame_queue.put(frame)
+                
+            except Exception as e:
+                print(f"[AUDIO] Error in frame parser: {e}")
+                import traceback
+                print(traceback.format_exc())
+                await asyncio.sleep(0.1)
+
+        print("[AUDIO] Frame parser stopping")
+
+    async def _process_frames_loop(self):
+        """Background task to process frames into audio data."""
+        print("[AUDIO] Frame processor started")
+        
+        while self.playing:
+            try:
+                # Get frame with timeout
+                try:
+                    frame_type, frame_data = await asyncio.wait_for(self.frame_queue.get(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    continue
+
                 if frame_type == self.FRAME_TYPE_AUDIO:
                     self.current_utterance.append(frame_data)
                 elif frame_type == self.FRAME_TYPE_END:
-                    self._process_complete_utterance()
-            
-        except Exception as e:
-            print(f"[AUDIO] Error in play_chunk: {e}")
-            import traceback
-            print(traceback.format_exc())
+                    # Process utterance in executor
+                    if self.current_utterance:
+                        complete_chunk = b''.join(self.current_utterance)
+                        if self.loop is None:
+                            self.loop = asyncio.get_running_loop()
+                        audio_data = await self.loop.run_in_executor(None, self._process_audio_data, complete_chunk)
+                        if audio_data is not None:
+                            await self.audio_queue.put(audio_data)
+                        self.current_utterance = []
+                
+            except Exception as e:
+                print(f"[AUDIO] Error in frame processor: {e}")
+                import traceback
+                print(traceback.format_exc())
+                await asyncio.sleep(0.1)
+
+        print("[AUDIO] Frame processor stopping")
 
     def _parse_frame(self, data):
         """Parse a frame from the data buffer. Returns (frame, remaining_data)."""
@@ -255,30 +338,9 @@ class AudioOutput:
         remaining_data = data[total_length:]
         return (frame_type, frame_data), remaining_data
 
-    def _process_complete_utterance(self):
-        """Process and queue the complete utterance."""
-        if not self.current_utterance:
-            return
-
-        try:
-            # Concatenate the raw audio data
-            complete_chunk = b''.join(self.current_utterance)
-            
-            # Process the complete utterance
-            audio_data = self._process_audio_data(complete_chunk)
-            if audio_data is not None and self.audio_queue is not None:
-                asyncio.create_task(self.audio_queue.put(audio_data))
-        except Exception as e:
-            print(f"[AUDIO] Error processing complete utterance: {e}")
-            import traceback
-            print(traceback.format_exc())
-        finally:
-            self.current_utterance = []
-
     def _process_audio_data(self, audio_bytes):
         """Process raw audio bytes into playable audio data."""
         try:
-            process_start = time.time()
             # Convert to float32 stereo
             audio_data = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             if audio_data.size == 0:

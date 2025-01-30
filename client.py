@@ -221,10 +221,11 @@ async def receive_transcripts(websocket, audio_interface):
 
             if isinstance(msg, bytes):
                 try:
-                    await audio_output.play_chunk(msg)
+                    # Use create_task to avoid blocking websocket loop
+                    asyncio.create_task(audio_output.play_chunk(msg))
                     continue
                 except Exception as e:
-                    print(f"\n[ERROR] Failed to process TTS chunk: {e}")
+                    print(f"\n[ERROR] Failed to queue TTS chunk: {e}")
                     import traceback
                     print(traceback.format_exc())
                     continue

@@ -180,24 +180,17 @@ async def receive_transcripts(websocket, audio_interface):
 
         # Define callback for LLM to send TTS requests
         async def handle_llm_chunk(text):
-            print(f"\n[TTS] Sending chunk: {text}")
             await websocket.send(f"TTS:{text}")
 
         async def process_text(text: str):
             """Process text input through LLM and TTS."""
-            print(f"\n[TEXT INPUT] Processing: {text}")
             try:
                 # Prepend trigger word if not present
                 if not text.lower().startswith(TRIGGER_WORD.lower()):
                     text = f"{TRIGGER_WORD}, {text}"
-                print(f"\n[TEXT INPUT] With trigger word: {text}")
                 
-                # Create non-blocking task for LLM processing
-                print("\n[AI RESPONSE] Starting...", flush=True)
                 await audio_output.start_stream()
-                # Process directly instead of creating a task to better track execution
                 await llm_client.process_trigger(text, callback=handle_llm_chunk)
-                print("\n[TEXT INPUT] Processing complete")
             except Exception as e:
                 print(f"\n[ERROR] Failed to process text input: {e}")
                 import traceback
@@ -213,8 +206,6 @@ async def receive_transcripts(websocket, audio_interface):
                 if audio_interface and audio_interface.has_gui:
                     text_input = audio_interface.get_text_input()
                     if text_input is not None:
-                        print("\n[DEBUG] Received text input from GUI:", text_input)
-                        # Create a task for text processing to avoid blocking
                         asyncio.create_task(process_text(text_input))
                 continue
             except websockets.ConnectionClosed:
@@ -229,12 +220,14 @@ async def receive_transcripts(websocket, audio_interface):
                 continue
 
             if isinstance(msg, bytes):
-                if msg.startswith(b'TTS:'):
-                    # Queue audio chunk immediately for playback
+                try:
                     await audio_output.play_chunk(msg)
-                elif msg == b'TTS_END':
-                    print("[TTS] End of utterance received")
-                continue
+                    continue
+                except Exception as e:
+                    print(f"\n[ERROR] Failed to process TTS chunk: {e}")
+                    import traceback
+                    print(traceback.format_exc())
+                    continue
 
             # Handle text messages
             if msg == "TTS_ERROR":
@@ -251,16 +244,9 @@ async def receive_transcripts(websocket, audio_interface):
                 
                 # Extract everything from the trigger word to the end
                 trigger_text = msg[trigger_pos:]
-                print(f"\n[TRIGGER DETECTED] Found trigger word: {trigger_text}")
 
                 try:
-                    # Process with LLM and stream responses to TTS
-                    print("\n[AI RESPONSE] ", end="", flush=True)
-
-                    # Start audio stream before processing to ensure it's ready
                     await audio_output.start_stream()
-
-                    # Create non-blocking task for LLM processing
                     asyncio.create_task(llm_client.process_trigger(trigger_text, callback=handle_llm_chunk))
                 except Exception as e:
                     print(f"\n[ERROR] Failed to process trigger: {e}")

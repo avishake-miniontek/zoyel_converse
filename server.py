@@ -7,6 +7,7 @@ import time
 import sys
 import json
 import os
+import struct
 from collections import deque
 from urllib.parse import urlparse, parse_qs
 
@@ -110,6 +111,27 @@ tts_pipeline.model = tts_pipeline.model.to(device=device, dtype=torch.float32)
 # AUDIO SERVER
 ################################################################################
 
+# Frame format:
+# Magic bytes (4 bytes): 0x4D495241 ("MIRA")
+# Frame type (1 byte): 
+#   0x01 = Audio data
+#   0x02 = End of utterance
+# Frame length (4 bytes): Length of payload in bytes
+# Payload: Audio data (for type 0x01) or empty (for type 0x02)
+
+MAGIC_BYTES = b'MIRA'
+FRAME_TYPE_AUDIO = 0x01
+FRAME_TYPE_END = 0x02
+
+def create_frame(frame_type, payload=b''):
+    """Create a framed message."""
+    frame = bytearray()
+    frame.extend(MAGIC_BYTES)
+    frame.append(frame_type)
+    frame.extend(struct.pack('>I', len(payload)))  # 4 bytes for length
+    frame.extend(payload)
+    return bytes(frame)
+
 class AudioServer:
     def __init__(self):
         with open('config.json', 'r') as f:
@@ -189,17 +211,28 @@ client_settings_manager = ClientSettingsManager()
 # TTS HELPER FUNCTIONS
 ################################################################################
 
-async def process_audio_chunk(websocket, chunk, fade_in=None, fade_out=None, fade_samples=32):
+async def send_audio_frame(websocket, audio_data):
+    """Send audio data using the framing protocol."""
     try:
-        if fade_in is not None:
-            chunk[:fade_samples] *= fade_in
-        if fade_out is not None:
-            chunk[-fade_samples:] *= fade_out
-            
-        chunk_int16 = np.clip(chunk * 32768.0, -32768, 32767).astype(np.int16)
-        await websocket.send(b'TTS:' + chunk_int16.tobytes())
+        # Convert float32 to int16
+        audio_int16 = np.clip(audio_data * 32768.0, -32768, 32767).astype(np.int16)
+        frame = create_frame(FRAME_TYPE_AUDIO, audio_int16.tobytes())
+        await websocket.send(frame)
     except Exception as e:
-        print(f"Error sending TTS audio chunk: {e}")
+        print(f"Error sending audio frame: {e}")
+        import traceback
+        print(traceback.format_exc())
+
+async def send_end_frame(websocket):
+    """Send an end of utterance frame."""
+    try:
+        frame = create_frame(FRAME_TYPE_END)
+        await websocket.send(frame)
+        print("[TTS] Binary end frame sent")
+    except Exception as e:
+        print(f"Error sending end frame: {e}")
+        import traceback
+        print(traceback.format_exc())
 
 # Keep track of accumulated text for each client
 client_tts_buffers = {}
@@ -240,38 +273,27 @@ async def handle_tts_multi_utterances(websocket, text, client_id):
                 print(f"[TTS] Generating audio for sentence: '{sentence}'")
                 generator = tts_pipeline(sentence, voice=f'{voice_name}_bella', speed=1)
 
-                # Collect the entire TTS audio for this sentence
+                # Generate and process TTS audio
                 audio_list = []
                 for _, _, audio in generator:
                     if torch.is_tensor(audio):
                         audio = audio.detach().cpu().numpy()
                     audio_list.append(audio.astype(np.float32))
 
-                # Concatenate partial TTS segments into one array
                 if not audio_list:
                     return
+                
+                # Process and send audio in chunks
                 audio = np.concatenate(audio_list)
                 audio = np.clip(audio, -1.0, 1.0).astype(np.float32)
-
-                # Send chunked frames
                 FRAME_SIZE = 512
-                fade_samples = 32
-                fade_in = np.linspace(0, 1, fade_samples).astype(np.float32)
-                fade_out = np.linspace(1, 0, fade_samples).astype(np.float32)
-
                 tasks = []
 
                 if len(audio) >= FRAME_SIZE:
-                    first_chunk = audio[:FRAME_SIZE].copy()
-                    tasks.append(process_audio_chunk(websocket, first_chunk, fade_in=fade_in))
+                    tasks.append(send_audio_frame(websocket, audio[:FRAME_SIZE].copy()))
 
                 for i in range(FRAME_SIZE, len(audio) - FRAME_SIZE, FRAME_SIZE):
-                    chunk = audio[i:i + FRAME_SIZE].copy()
-                    if i + FRAME_SIZE >= len(audio) - FRAME_SIZE:
-                        tasks.append(process_audio_chunk(websocket, chunk, fade_out=fade_out))
-                    else:
-                        tasks.append(process_audio_chunk(websocket, chunk))
-
+                    tasks.append(send_audio_frame(websocket, audio[i:i + FRAME_SIZE].copy()))
                     if len(tasks) >= 8:
                         await asyncio.gather(*tasks)
                         tasks = []
@@ -279,14 +301,13 @@ async def handle_tts_multi_utterances(websocket, text, client_id):
                 if tasks:
                     await asyncio.gather(*tasks)
 
-                # Send TTS_END after the complete sentence
-                print(f"[TTS] Sending TTS_END for sentence: '{sentence}'")
-                await websocket.send(b"TTS_END")
-                print("[TTS] TTS_END sent")
+                # Send end frame after the complete sentence
+                await send_end_frame(websocket)
 
     except Exception as e:
         print(f"TTS Error: {e}")
-        await websocket.send(b"TTS_ERROR")
+        import traceback
+        print(traceback.format_exc())
 
 ################################################################################
 # SECURITY CHECK
@@ -434,7 +455,7 @@ async def transcribe_audio(websocket):
                     print(f"Client {client_id} exit requested.")
                     break
                 elif message.startswith("TTS:"):
-                    # **Now handle multi-utterance TTS**:
+                    # Handle TTS request
                     text = message[4:].strip()
                     print(f"[TTS] Request from {client_id}: {text}")
                     asyncio.create_task(handle_tts_multi_utterances(websocket, text, client_id))
@@ -445,6 +466,8 @@ async def transcribe_audio(websocket):
         print(f"Client {client_id} disconnected: {e}")
     except Exception as e:
         print(f"Server error for {client_id}: {e}")
+        import traceback
+        print(traceback.format_exc())
     finally:
         if server and server.audio_core:
             server.audio_core.close()

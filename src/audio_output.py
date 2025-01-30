@@ -15,6 +15,7 @@ class AudioOutput:
         self.playing = False
         self.play_thread = None
         self.current_device = None
+        self.resampler = None  # Will be initialized when needed
 
     def _find_output_device(self, device_name=None):
         """Find a suitable audio output device across platforms."""
@@ -145,15 +146,11 @@ class AudioOutput:
 
                         # Resample if needed
                         if self.device_rate != self.input_rate:
-                            gcd = np.gcd(self.device_rate, self.input_rate)
-                            up = self.device_rate // gcd
-                            down = self.input_rate // gcd
-                            audio_data = signal.resample_poly(
-                                audio_data,
-                                up=up,
-                                down=down,
-                                axis=0
-                            )
+                            if not self.resampler:
+                                import samplerate
+                                self.resampler = samplerate.Resampler('sinc_best', channels=2)
+                            ratio = self.device_rate / self.input_rate
+                            audio_data = self.resampler.process(audio_data, ratio)
 
                         # Write to stream if it's active
                         if self.stream and self.stream.active:

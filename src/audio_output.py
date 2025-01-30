@@ -172,11 +172,11 @@ class AudioOutput:
 
         try:
             print("[TTS Output] Initializing audio output...")
-            
+
             # Find suitable output device
             device_idx, device_info = self._find_output_device()
             self.device_rate = int(device_info['default_samplerate'])
-            
+
             # Create output stream with Windows-specific optimizations
             stream_kwargs = {
                 'device': device_idx,
@@ -185,24 +185,24 @@ class AudioOutput:
                 'dtype': np.float32,
                 'latency': 'low'  # Keep low latency for responsiveness
             }
-            
+
             # Use WASAPI on Windows for better performance
             if platform.system() == 'Windows':
-                stream_kwargs['extra_settings'] = {
-                    'wasapi_exclusive': False,  # Shared mode for compatibility
-                    'wasapi_buffer_size': 480   # Smaller buffer for lower latency
-                }
-            
+                import sounddevice as sd
+                wasapi_settings = sd.WasapiSettings(exclusive=False)
+                stream_kwargs['extra_settings'] = wasapi_settings  # Use WasapiSettings instead of a dictionary
+
             self.stream = sd.OutputStream(**stream_kwargs)
             self.stream.start()
-            
+
             print("[TTS Output] Successfully initialized audio")
-            
+
         except Exception as e:
             print(f"[TTS Output] Error initializing audio: {e}")
             if self.stream:
                 self.stream.close()
                 self.stream = None
+
 
     async def initialize(self):
         """Initialize audio output"""

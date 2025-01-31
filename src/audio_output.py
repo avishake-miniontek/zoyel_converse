@@ -1,341 +1,335 @@
 import sounddevice as sd
 import numpy as np
-import threading
 from collections import deque
-import time
-from scipy import signal
 import platform
+import struct
+from scipy import signal
+import time
+import asyncio
 
 class AudioOutput:
+    """
+    A simplified, callback-driven audio output class that:
+      - Selects an output device, or uses default
+      - Handles MIRA-framed TTS audio (int16 mono blocks)
+      - Parses frames outside the callback
+      - Resamples data to float32 stereo at device_rate
+      - Enqueues each final block into a ring buffer (self.audio_queue)
+      - The callback drains that queue for playback
+    """
+
+    MAGIC_BYTES = b'MIRA'
+    FRAME_TYPE_AUDIO = 0x01
+    FRAME_TYPE_END = 0x02
+    HEADER_SIZE = 9  # 4 magic + 1 frame_type + 4 length
+
     def __init__(self):
+        self.input_rate = 24000           # TTS audio sample rate
+        self.device_rate = None           # Will set after device selection
         self.stream = None
-        self.device_rate = None
-        self.input_rate = 24000  # TTS output rate
-        self.audio_queue = deque()  # Remove maxlen to preserve all chunks
+
+        # A queue of final float32 stereo blocks, ready for playback
+        # Each element is shape (samples, 2)
+        self.audio_queue = deque()
+
+        # For partial frame parsing
+        self.partial_frame = b''          # leftover bytes from last chunk
+        self.current_utterance = []       # accumulate AUDIO frames until FRAME_TYPE_END
+
+        # Whether we're actively playing audio
         self.playing = False
-        self.play_thread = None
+
+        # Device info
         self.current_device = None
+
+    ###########################################################################
+    # DEVICE SELECTION & INITIALIZATION
+    ###########################################################################
 
     def _find_output_device(self, device_name=None):
         """
-        Find a suitable audio output device with improved Linux compatibility.
-        
-        Args:
-            device_name: Optional name of device to use. If None, uses system default.
-            
-        Returns:
-            Tuple of (device_index, device_info)
+        Find an appropriate device. If device_name is specified, look for it by name.
+        Otherwise, use the system default or the first output device we find.
         """
-        try:
-            # Print available devices for debugging
-            print("\nAvailable output devices:")
-            devices = sd.query_devices()
-            output_devices = []
-            
-            # First pass: collect all output devices
-            for i, dev in enumerate(devices):
-                if dev['max_output_channels'] > 0:
-                    print(f"Device {i}: {dev['name']} (outputs: {dev['max_output_channels']}, rate: {dev['default_samplerate']}Hz)")
-                    output_devices.append((i, dev))
+        devices = sd.query_devices()
+        output_devices = []
 
-            system = platform.system()
-            
-            # Windows-specific device detection
-            if system == 'Windows':
-                # First try to find devices with 'speakers' or 'headphones' in the name
-                preferred_keywords = [
-                    'speakers', 'headphones',  # Common output devices
-                    'realtek', 'hdmi',         # Common audio drivers/outputs
-                    'wasapi', 'directsound'    # Windows audio APIs
-                ]
-                
-                for keyword in preferred_keywords:
-                    for i, dev in output_devices:
-                        if keyword in dev['name'].lower():
-                            print(f"\nSelected Windows output device: {dev['name']}")
-                            self.current_device = dev
-                            return i, dev
-                            
-            # Linux-specific device detection
-            elif system == 'Linux':
-                # First try PipeWire
-                for i, dev in output_devices:
-                    if 'pipewire' in dev['name'].lower():
-                        print(f"\nSelected PipeWire device: {dev['name']}")
-                        self.current_device = dev
-                        return i, dev
-                
-                # Then try other Linux-specific devices
-                preferred_keywords = [
-                    'pulse', 'default',  # Modern audio servers
-                    'hw:', 'plughw:',    # ALSA devices
-                    'dmix', 'surround'   # ALSA plugins
-                ]
-                
-                # Try to find device by name if provided
-                if device_name:
-                    for i, dev in output_devices:
-                        if dev['max_output_channels'] > 0 and dev['name'] == device_name:
-                            print(f"\nSelected output device: {dev['name']}")
-                            self.current_device = dev
-                            return i, dev
-                
-                # Otherwise try preferred devices in order
-                for keyword in preferred_keywords:
-                    for i, dev in output_devices:
-                        if keyword in dev['name'].lower():
-                            print(f"\nSelected Linux output device: {dev['name']}")
-                            self.current_device = dev
-                            return i, dev
-            
-            # For non-Linux systems or if no preferred device found
-            if device_name:
-                for i, dev in output_devices:
-                    if dev['max_output_channels'] > 0 and dev['name'] == device_name:
-                        print(f"\nSelected output device: {dev['name']}")
-                        self.current_device = dev
-                        return i, dev
+        print("\n[AUDIO] Available output devices:")
+        for i, dev in enumerate(devices):
+            if dev['max_output_channels'] > 0:
+                print(f"  Device {i}: {dev['name']} "
+                      f"(outputs={dev['max_output_channels']}, "
+                      f"rate={dev['default_samplerate']:.0f}Hz)")
+                output_devices.append((i, dev))
 
-            # Fall back to default output device
-            default_idx = sd.default.device[1]  # Get default output device index
-            if default_idx is not None and 0 <= default_idx < len(devices):
-                device_info = devices[default_idx]
-            else:
-                # If default device index is invalid, use first available output device
-                device_info = next((dev for i, dev in output_devices), None)
-                if device_info is None:
-                    raise RuntimeError("No output devices found")
-                default_idx = output_devices[0][0]
-            
-            print(f"\nSelected default output device: {device_info['name']}")
+        if device_name:
+            # Look for exact match
+            for i, dev in output_devices:
+                if dev['name'] == device_name:
+                    print(f"\n[AUDIO] Selected output device: {dev['name']}")
+                    self.current_device = dev
+                    return i, dev
+
+        # Otherwise pick default or the first available
+        default_idx = sd.default.device[1]
+        if default_idx is not None and 0 <= default_idx < len(devices):
+            device_info = devices[default_idx]
+            print(f"\n[AUDIO] Selected default device: {device_info['name']}")
             self.current_device = device_info
             return default_idx, device_info
 
-        except Exception as e:
-            print(f"Error finding output device: {e}")
-            raise
+        # Fallback: first valid device
+        if output_devices:
+            i, dev = output_devices[0]
+            print(f"\n[AUDIO] Selected first available device: {dev['name']}")
+            self.current_device = dev
+            return i, dev
+
+        raise RuntimeError("[AUDIO] No suitable output devices found.")
 
     def get_device_name(self):
-        """Get the name of the current output device"""
         if self.current_device:
             return self.current_device['name']
         return "No device selected"
 
-    def set_device_by_name(self, device_name):
+    async def set_device_by_name(self, device_name):
         """
-        Change the output device by name.
+        Switch to a new device by name, re-initializing the stream if needed.
+        """
+        print(f"[AUDIO] Switching to device: {device_name}")
+        self.pause()
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+        await self.initialize(device_name=device_name)
+        if self.playing:
+            self.start_stream()
+
+    def initialize_sync(self, device_name=None):
+        """
+        Synchronous init if you prefer. Similar to async but blocking.
+        """
+        if self.stream and self.stream.active:
+            return
+        try:
+            self._do_initialize(device_name=device_name)
+        except Exception as e:
+            print(f"[AUDIO] Error in initialize_sync: {e}")
+
+    async def initialize(self, device_name=None):
+        """
+        Async init. If the stream is not active, pick device and open stream.
+        """
+        if self.stream and self.stream.active:
+            return
+        self._do_initialize(device_name=device_name)
+
+    async def _open_stream(self, device_idx):
+        """
+        Internal method to open the audio stream with better error handling. 
+        """
+        try:
+            stream_kwargs = {
+                'device': device_idx,
+                'samplerate': self.device_rate,
+                'channels': 2,
+                'dtype': np.float32,
+                'latency': 'high',  # higher latency => more stable in many environments
+                'callback': self._audio_callback
+            }
+
+            print(f"[AUDIO] Opening stream with settings: {stream_kwargs}")
+            self.stream = sd.OutputStream(**stream_kwargs)
+            self.stream.start()
+            await asyncio.sleep(0.2)  # Give the stream a moment to stabilize
+            print("[AUDIO] Stream started successfully.")
+
+        except Exception as e:
+            print(f"[AUDIO] Failed to open stream: {e}")
+            if self.stream:
+                self.stream.close()
+            self.stream = None
+            raise RuntimeError(f"[AUDIO] Could not open output stream: {e}")
+
+    def _do_initialize(self, device_name=None):
+        """
+        The actual device init logic (shared by sync and async methods).
+        """
+        device_idx, dev_info = self._find_output_device(device_name=device_name)
+        self.device_rate = int(dev_info['default_samplerate'])
         
-        Args:
-            device_name: Name of the device to use
+        # Create an event loop for the async _open_stream call
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(self._open_stream(device_idx))
+            print(f"[AUDIO] Stream started on device: {dev_info['name']} at {self.device_rate} Hz")
+        except Exception as e:
+            print(f"[AUDIO] Error in _do_initialize: {e}")
+            raise
+        finally:
+            loop.close()
+
+    ###########################################################################
+    # CALLBACK & QUEUE
+    ###########################################################################
+
+    def _audio_callback(self, outdata, frames, time_info, status):
         """
-        print(f"\nChanging output device to: {device_name}")
-        try:
-            # Stop current playback
-            self.pause()
-            if self.stream:
-                self.stream.close()
-                self.stream = None
-            
-            # Find and set new device
-            device_idx, device_info = self._find_output_device(device_name)
-            self.device_rate = int(device_info['default_samplerate'])
-            
-            # Create output stream with Windows-specific optimizations
-            stream_kwargs = {
-                'device': device_idx,
-                'samplerate': self.device_rate,
-                'channels': 2,  # Use stereo output
-                'dtype': np.float32,
-                'latency': 'low'
-            }
-            
-            # Use WASAPI on Windows for better performance
-            if platform.system() == 'Windows':
-                stream_kwargs['extra_settings'] = {
-                    'wasapi_exclusive': False,  # Shared mode for compatibility
-                    'wasapi_buffer_size': 480   # Smaller buffer for lower latency
-                }
-            
-            self.stream = sd.OutputStream(**stream_kwargs)
-            self.stream.start()
-            print(f"Successfully switched to device: {device_name}")
-            
-        except Exception as e:
-            print(f"Error changing output device: {e}")
-            # Try to fall back to default device
-            self.initialize_sync()
+        sounddevice callback. Fill 'outdata' with up to 'frames' samples
+        from self.audio_queue. If empty, fill with silence and log underflow.
+        """
+        if status and status.output_underflow:
+            print("[AUDIO] Output underflow (no data).")
 
-    def initialize_sync(self):
-        """Initialize audio output synchronously"""
-        if self.stream and self.stream.active:
-            return
+        outdata.fill(0.0)
+        needed = frames
+        offset = 0
 
-        try:
-            print("[TTS Output] Initializing audio output...")
-            
-            # Find suitable output device
-            device_idx, device_info = self._find_output_device()
-            self.device_rate = int(device_info['default_samplerate'])
-            
-            # Create output stream with Windows-specific optimizations
-            stream_kwargs = {
-                'device': device_idx,
-                'samplerate': self.device_rate,
-                'channels': 2,  # Use stereo output
-                'dtype': np.float32,
-                'latency': 'low'  # Keep low latency for responsiveness
-            }
-            
-            # Use WASAPI on Windows for better performance
-            if platform.system() == 'Windows':
-                stream_kwargs['extra_settings'] = {
-                    'wasapi_exclusive': False,  # Shared mode for compatibility
-                    'wasapi_buffer_size': 480   # Smaller buffer for lower latency
-                }
-            
-            self.stream = sd.OutputStream(**stream_kwargs)
-            self.stream.start()
-            
-            print("[TTS Output] Successfully initialized audio")
-            
-        except Exception as e:
-            print(f"[TTS Output] Error initializing audio: {e}")
-            if self.stream:
-                self.stream.close()
-                self.stream = None
+        while needed > 0 and self.audio_queue:
+            chunk = self.audio_queue[0]
+            chunk_len = len(chunk)
+            if chunk_len <= needed:
+                # Copy the entire chunk
+                outdata[offset : offset + chunk_len] = chunk
+                offset += chunk_len
+                needed -= chunk_len
+                self.audio_queue.popleft()
+            else:
+                # Copy part of the chunk
+                portion = chunk[:needed]
+                outdata[offset : offset + needed] = portion
+                self.audio_queue[0] = chunk[needed:]
+                needed = 0
 
-    async def initialize(self):
-        """Initialize audio output"""
-        if self.stream and self.stream.active:
-            return
-
-        try:
-            print("[TTS Output] Initializing audio output...")
-            
-            # Find suitable output device
-            device_idx, device_info = self._find_output_device()
-            self.device_rate = int(device_info['default_samplerate'])
-            
-            # Create output stream with Windows-specific optimizations
-            stream_kwargs = {
-                'device': device_idx,
-                'samplerate': self.device_rate,
-                'channels': 2,  # Use stereo output
-                'dtype': np.float32,
-                'latency': 'low'  # Keep low latency for responsiveness
-            }
-            
-            # Use WASAPI on Windows for better performance
-            if platform.system() == 'Windows':
-                stream_kwargs['extra_settings'] = {
-                    'wasapi_exclusive': False,  # Shared mode for compatibility
-                    'wasapi_buffer_size': 480   # Smaller buffer for lower latency
-                }
-            
-            self.stream = sd.OutputStream(**stream_kwargs)
-            self.stream.start()
-            
-            print("[TTS Output] Successfully initialized audio")
-            
-        except Exception as e:
-            print(f"[TTS Output] Error initializing audio: {e}")
-            if self.stream:
-                self.stream.close()
-                self.stream = None
-
-    def _play_audio_thread(self):
-        """Background thread for continuous audio playback"""
-        while self.playing:
-            try:
-                if self.audio_queue:
-                    chunk = self.audio_queue.popleft()
-                    
-                    # Remove TTS: prefix if present
-                    if chunk.startswith(b'TTS:'):
-                        chunk = chunk[4:]
-                    
-                    # Convert to float32 with clipping for cleaner audio
-                    audio_data = np.clip(
-                        np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0,
-                        -1.0, 1.0
-                    )
-                    
-                    # Convert mono to stereo
-                    audio_data = np.column_stack((audio_data, audio_data))
-                    
-                    # Resample if needed using resample_poly for better quality
-                    if self.device_rate != self.input_rate:
-                        # Calculate resampling parameters
-                        gcd_val = np.gcd(self.device_rate, self.input_rate)
-                        up = self.device_rate // gcd_val
-                        down = self.input_rate // gcd_val
-                        # Use resample_poly with small chunk size for better real-time performance
-                        audio_data = signal.resample_poly(audio_data, up, down, padtype='line')
-                    
-                    # Play audio
-                    if self.stream and self.stream.active:
-                        self.stream.write(audio_data)
-                else:
-                    # Brief sleep when queue is empty
-                    time.sleep(0.001)  # Keep original sleep time for responsiveness
-                    
-            except Exception as e:
-                print(f"[TTS Output] Error in playback thread: {e}")
-                self.playing = False # Ensure thread exits on error
-                break # Exit thread on playback error
-
-    async def play_chunk(self, chunk):
-        """Queue an audio chunk for playback"""
-        try:
-            self.audio_queue.append(chunk)
-        except Exception as e:
-            print(f"[TTS Output] Error queueing chunk: {e}")
+    ###########################################################################
+    # PLAY CONTROL
+    ###########################################################################
 
     async def start_stream(self):
-        """Start the audio stream and playback thread"""
-        try:
-            if not self.stream or not self.stream.active:
-                await self.initialize()
-            
-            # Start playback thread if not already running
-            if not self.playing:
-                self.playing = True
-                self.play_thread = threading.Thread(target=self._play_audio_thread)
-                self.play_thread.daemon = True
-                self.play_thread.start()
-                print("[TTS Output] Playback thread started")
-                
-        except Exception as e:
-            print(f"[TTS Output] Error starting stream: {e}")
+        """
+        Mark ourselves as playing. If not initialized, do so. 
+        The callback automatically starts pulling data.
+        """
+        self.playing = True
+        if not self.stream or not self.stream.active:
+            await self.initialize()
 
     def pause(self):
-        """Stop audio playback"""
+        """
+        Stop playback, flush the queue, but keep the stream open if you want to resume.
+        """
         self.playing = False
-        if self.play_thread:
-            self.play_thread.join(timeout=1.0)
+        self.audio_queue.clear()
         if self.stream and self.stream.active:
             self.stream.stop()
-        # Clear any remaining audio
-        self.audio_queue.clear()
+            print("[AUDIO] Playback paused.")
 
-    def close(self):
-        """Clean up audio resources and ensure thread termination"""
-        print("[TTS Output] AudioOutput.close() called - start") # Debug log
-        self.playing = False
-        # Signal the thread to stop
-        if self.play_thread and self.play_thread.is_alive():
-            try:
-                self.play_thread.join(timeout=1.0)  # Wait for the thread to finish
-            except Exception as e:
-                print(f"[TTS Output] Error joining playback thread: {e}")
-
-        # Close the stream
+    async def close(self):
+        """
+        Fully close the audio stream and reset everything.
+        """
+        print("[AUDIO] Closing audio output...")
+        self.pause()
         if self.stream:
-            try:
-                self.stream.stop()
-                self.stream.close()
-            except Exception as e:
-                print(f"[TTS Output] Error closing stream: {e}")
-            finally:
-                self.stream = None
-        print("[TTS Output] AudioOutput.close() finished") # Debug log
+            self.stream.close()
+            self.stream = None
+        self.partial_frame = b''
+        self.current_utterance.clear()
+        self.audio_queue.clear()
+        print("[AUDIO] Audio output closed.")
+
+    ###########################################################################
+    # FRAME PARSING & ENQUEUE
+    ###########################################################################
+
+    def parse_frame(self, data: bytes):
+        """
+        Try parsing one frame from 'data' (which may have leftover from previous chunk).
+        Returns (frame_type, payload), remainder_data or (None, data) if incomplete.
+        """
+        if len(data) < self.HEADER_SIZE:
+            return None, data
+
+        # Check magic
+        if data[:4] != self.MAGIC_BYTES:
+            # Attempt to find next valid magic
+            idx = data.find(self.MAGIC_BYTES, 1)
+            if idx == -1:
+                # No valid magic, discard everything
+                return None, b''
+            else:
+                # Skip up to the next magic
+                data = data[idx:]
+                if len(data) < self.HEADER_SIZE:
+                    return None, data
+
+        frame_type = data[4]
+        frame_length = struct.unpack('>I', data[5:9])[0]
+        total_length = self.HEADER_SIZE + frame_length
+        if len(data) < total_length:
+            # Incomplete
+            return None, data
+
+        payload = data[self.HEADER_SIZE : total_length]
+        remainder = data[total_length:]
+        return (frame_type, payload), remainder
+
+    def process_utterance_and_enqueue(self, utterance_data: bytes):
+        """
+        Called when an utterance is complete. Convert int16 mono -> float32 stereo,
+        resample if needed, then push to self.audio_queue.
+        """
+        if not utterance_data:
+            return
+
+        # Convert to float32 from int16
+        audio_int16 = np.frombuffer(utterance_data, dtype=np.int16)
+        if audio_int16.size == 0:
+            return
+        float_mono = audio_int16.astype(np.float32) / 32768.0
+
+        # Resample if device_rate != input_rate
+        if self.device_rate and (self.device_rate != self.input_rate):
+            gcd_val = np.gcd(self.device_rate, self.input_rate)
+            up = self.device_rate // gcd_val
+            down = self.input_rate // gcd_val
+            float_mono = signal.resample_poly(float_mono, up, down)
+
+        # Expand to stereo
+        float_stereo = np.column_stack([float_mono, float_mono]).astype(np.float32)
+
+        # Add to queue
+        self.audio_queue.append(float_stereo)
+
+    async def play_chunk(self, chunk: bytes):
+        """
+        Public method: parse raw data (which may contain zero, one, or multiple frames).
+        Accumulate AUDIO frames in self.current_utterance until we see FRAME_TYPE_END,
+        then process & enqueue.
+        """
+        # If we haven't started, the callback won't play yet,
+        # but we can still parse and queue data.
+        data = self.partial_frame + chunk
+        self.partial_frame = b''
+
+        while True:
+            frame, data = self.parse_frame(data)
+            if frame is None:
+                # No more complete frames
+                self.partial_frame = data
+                break
+
+            frame_type, payload = frame
+            if frame_type == self.FRAME_TYPE_AUDIO:
+                # Accumulate
+                self.current_utterance.append(payload)
+            elif frame_type == self.FRAME_TYPE_END:
+                # We have a complete utterance
+                if self.current_utterance:
+                    combined = b''.join(self.current_utterance)
+                    self.current_utterance.clear()
+                    self.process_utterance_and_enqueue(combined)
+
+        # Optionally start stream if not playing
+        if not self.playing:
+            await self.start_stream()

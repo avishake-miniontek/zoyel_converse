@@ -271,8 +271,17 @@ class AudioCore:
         Convert int16-encoded bytes to float32 samples in [-1..1].
         This is typically what your client is sending/receiving.
         """
+        # Debug: Log incoming bytes
+        print(f"[AUDIO DEBUG] bytes_to_float32_audio input size: {len(audio_data)} bytes")
+        
+        # Convert to int16
         audio_int16 = np.frombuffer(audio_data, dtype=np.int16)
+        print(f"[AUDIO DEBUG] int16 array shape: {audio_int16.shape}")
+        
+        # Convert to float32
         audio_float32 = audio_int16.astype(np.float32) / 32768.0
+        print(f"[AUDIO DEBUG] Conversion stats - int16 range: [{np.min(audio_int16)}, {np.max(audio_int16)}], float32 range: [{np.min(audio_float32):.3f}, {np.max(audio_float32):.3f}]")
+        
         return audio_float32, (sample_rate if sample_rate is not None else self.DESIRED_RATE)
 
     # ----------------------------------------------------------------
@@ -280,16 +289,17 @@ class AudioCore:
     # ----------------------------------------------------------------
     def convert_to_mono(self, audio_data):
         """
-        Convert multi-channel audio to mono by averaging all channels.
+        Convert multi-channel audio to mono by taking the left channel.
+        This provides cleaner input for VAD compared to channel averaging.
         
         Args:
             audio_data: numpy array of shape (frames, channels) or (frames,) for mono
             
         Returns:
-            numpy array of shape (frames,) containing mono audio
+            numpy array of shape (frames,) containing mono audio from left channel
         """
         if len(audio_data.shape) == 2 and audio_data.shape[1] > 1:
-            return np.mean(audio_data, axis=1)
+            return audio_data[:, 0]  # Take left channel
         return audio_data
 
     def process_audio_vad(self, audio_data):

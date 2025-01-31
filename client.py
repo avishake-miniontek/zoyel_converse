@@ -111,7 +111,7 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
 
                 # Convert multi-channel to mono if needed
                 if len(audio_data.shape) == 2 and audio_data.shape[1] > 1:
-                    audio_data = np.mean(audio_data, axis=1)
+                    audio_data = audio_data[:, 0]  # Take left channel
 
                 # Optionally update GUI with VAD status
                 if audio_interface and audio_interface.has_gui:

@@ -490,8 +490,18 @@ async def transcribe_audio(websocket):
             if isinstance(message, bytes):
                 # Microphone audio
                 try:
+                    # Debug: Log incoming audio data details
+                    print(f"[AUDIO DEBUG] Received chunk size: {len(message)} bytes")
+                    
                     chunk_data, sr = server.audio_core.bytes_to_float32_audio(message, sample_rate=16000)
+                    print(f"[AUDIO DEBUG] Converted chunk shape: {chunk_data.shape}, dtype: {chunk_data.dtype}")
+                    print(f"[AUDIO DEBUG] Audio range: min={chunk_data.min():.3f}, max={chunk_data.max():.3f}, mean={chunk_data.mean():.3f}")
+                    
                     result = server.audio_core.process_audio(chunk_data)
+                    
+                    # Debug: Log VAD results
+                    if result.get('is_speech'):
+                        print(f"[AUDIO DEBUG] Speech detected - duration: {result.get('speech_duration', 0):.2f}s, level: {result.get('db_level', 0):.1f}dB")
 
                     if result.get('is_complete') and result.get('is_speech'):
                         audio = result.get('audio')

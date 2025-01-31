@@ -200,14 +200,16 @@ class AudioCore:
 
             sd.default.device = (working_device, None)
 
-            # If you still want a "floor" for the GUI, do a short capture (2s)
+            # Shorter calibration duration for resource-constrained devices
             # We won't rely on it for gating.
-            calibration_duration = 2.0
+            calibration_duration = 0.5  # 500ms is enough for floor detection
             frames_needed = int(rate * calibration_duration)
             print(f"\nCalibrating GUI floor for {calibration_duration}s... (not used by VAD)")
+            # Use a smaller chunk size for calibration on resource-constrained devices
             audio_buffer = sd.rec(frames_needed, samplerate=rate,
-                                  channels=1, dtype='float32')
-            sd.wait()
+                                channels=1, dtype='float32',
+                                blocksize=1024)  # Smaller blocksize for better responsiveness
+            sd.wait()  # This will be faster now due to shorter duration
             audio_buffer = audio_buffer.flatten()
 
             chunk_rms_list = []

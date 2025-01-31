@@ -31,7 +31,8 @@ class AudioOutput:
 
         # A queue of final float32 stereo blocks, ready for playback
         # Each element is shape (samples, 2)
-        self.audio_queue = deque()
+        # Limit queue size to prevent memory issues on resource-constrained devices
+        self.audio_queue = deque(maxlen=32)  # Limit to 32 chunks
 
         # For partial frame parsing
         self.partial_frame = b''          # leftover bytes from last chunk
@@ -145,12 +146,17 @@ class AudioOutput:
         Internal method to open the audio stream with better error handling. 
         """
         try:
+            # Calculate optimal buffer size based on sample rate
+            # Use smaller buffers on resource-constrained devices
+            buffer_size = min(2048, self.device_rate // 20)  # 50ms worth of samples or 2048, whichever is smaller
+            
             stream_kwargs = {
                 'device': device_idx,
                 'samplerate': self.device_rate,
                 'channels': 2,
                 'dtype': np.float32,
-                'latency': 'high',  # higher latency => more stable in many environments
+                'latency': 0.1,  # 100ms latency, good balance for resource-constrained devices
+                'blocksize': buffer_size,
                 'callback': self._audio_callback
             }
 
@@ -306,10 +312,10 @@ class AudioOutput:
 
         # Resample if device_rate != input_rate
         if self.device_rate and (self.device_rate != self.input_rate):
-            gcd_val = np.gcd(self.device_rate, self.input_rate)
-            up = self.device_rate // gcd_val
-            down = self.input_rate // gcd_val
-            float_mono = signal.resample_poly(float_mono, up, down)
+            # Use a simpler resampling method for better performance
+            # This trades some quality for better performance on resource-constrained devices
+            samples_out = int(len(float_mono) * self.device_rate / self.input_rate)
+            float_mono = signal.resample(float_mono, samples_out)
 
         # Expand to stereo
         float_stereo = np.column_stack([float_mono, float_mono]).astype(np.float32)

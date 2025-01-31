@@ -1,25 +1,15 @@
 """
-Audio core that uses Py-WebRTCVad for speech detection
-instead of manual floor/ratio gating.
-
-We keep:
-- init_audio_device() for device selection & optional 'calibration'
-- process_audio() for chunk-based reading
-
-BUT:
-- The actual "is_speech" gating is done by WebRTC VAD in 20ms frames.
-- We keep a short "hangover" (end_silence_frames) so we don't cut speech abruptly.
-- We maintain a preroll buffer to catch the start of speech.
+Client-side audio core for capturing and preprocessing audio.
+Handles device selection, audio capture, and basic audio level monitoring.
 """
 
 import json
 import numpy as np
 import time
-from collections import deque
 import sounddevice as sd
-import webrtcvad  # <-- New dependency
 import platform
 import warnings
+from src import audio_utils
 
 class AudioCore:
     def __init__(self):
@@ -34,58 +24,19 @@ class AudioCore:
         self.CHANNELS = None  # Will be set based on device
         self.DESIRED_RATE = self.config['audio_processing']['desired_rate']
 
-        # We'll still track some "floor" for your GUI, but it's not used by the VAD gating
+        # Audio level tracking for GUI
         self._noise_floor = -96.0
         self._min_floor   = -96.0
         self._max_floor   = -36.0
         self._rms_level   = -96.0
         self._peak_level  = -96.0
         self.last_update  = time.time()
-        self.debug_counter = 0
 
         # This "calibration" is mostly for display logs
         self.calibrated_floor = None
 
-        # --------------- NEW: WebRTC VAD Setup ---------------
-        # Create a WebRTC VAD instance. Mode can be 0-3 (3 = most aggressive).
-        vad_mode = self.config['speech_detection']['vad_settings']['mode']
-        self.vad = webrtcvad.Vad(mode=vad_mode)
-
-        # We'll feed the VAD frames at 16kHz, 16-bit mono
-        self.VAD_FRAME_MS = self.config['speech_detection']['vad_settings']['frame_duration_ms']
-        self.VAD_FRAME_SIZE = int((self.VAD_FRAME_MS / 1000.0) * self.DESIRED_RATE)  # Convert ms to seconds
-        self._vad_buffer = bytearray()  # Holds leftover PCM between calls
-
-        # Preroll and speech detection state
-        self.preroll_duration = self.config['speech_detection']['preroll_duration']
-        self.preroll_samples = int(self.DESIRED_RATE * self.preroll_duration)
-        self.preroll_buffer = deque(maxlen=self.preroll_samples)
-        self.audio_buffer = []  # Accumulates audio during speech
-        self.last_speech_end = 0  # timestamp of last speech end
-        self.last_speech_level = -96.0  # Track speech level for better gating
-
-        # State machine for speech detection
-        self.is_speaking = False
-        self.speech_frames = 0
-        self.silence_frames = 0
-        self.speech_start_time = None
-        self.min_speech_duration = self.config['speech_detection']['min_speech_duration']
-        self.was_speech = False  # Track if we were speaking in previous chunk
-
-        # Speech detection thresholds
-        self.start_speech_frames = self.config['speech_detection']['vad_settings'].get('consecutive_threshold', 2)
-        self.end_silence_frames = int(
-            self.config['speech_detection']['end_silence_duration'] / (self.VAD_FRAME_MS / 1000.0)
-        )
-        # e.g. if end_silence_duration=0.8, 0.8 / 0.02 = 40 frames
-
-        # NEW: For real-time VAD visualization
-        self.consecutive_vad_speech = 0
-        self.vad_speech_threshold = self.config['speech_detection']['vad_settings'].get('consecutive_threshold', 2)
-        self._vad_visualization_buffer = bytearray()
-
     # ----------------------------------------------------------------
-    # Optional: Keep your old floor logic for logging or GUI meter
+    # Audio level properties for GUI meter
     # ----------------------------------------------------------------
     @property
     def noise_floor(self):
@@ -134,12 +85,11 @@ class AudioCore:
         self._peak_level = float(value)
 
     # ----------------------------------------------------------------
-    # Audio Device Initialization & Optional "Calibration"
+    # Audio Device Initialization & Calibration
     # ----------------------------------------------------------------
     def init_audio_device(self):
         """
-        Initialize audio device. We might do a short "calibration" for your GUI's floor display,
-        but we won't rely on it for gating. The gating is handled by WebRTC VAD.
+        Initialize audio device and perform a short calibration for GUI floor display.
         """
         try:
             system = platform.system().lower()
@@ -200,11 +150,10 @@ class AudioCore:
 
             sd.default.device = (working_device, None)
 
-            # Shorter calibration duration for resource-constrained devices
-            # We won't rely on it for gating.
+            # Short calibration for GUI floor display
             calibration_duration = 0.5  # 500ms is enough for floor detection
             frames_needed = int(rate * calibration_duration)
-            print(f"\nCalibrating GUI floor for {calibration_duration}s... (not used by VAD)")
+            print(f"\nCalibrating GUI floor for {calibration_duration}s...")
             # Use a smaller chunk size for calibration on resource-constrained devices
             audio_buffer = sd.rec(frames_needed, samplerate=rate,
                                 channels=1, dtype='float32',
@@ -237,7 +186,7 @@ class AudioCore:
             else:
                 self.calibrated_floor = -60.0
 
-            print(f"  GUI floor set to: {self.calibrated_floor:.1f} dB (not used by VAD)")
+            print(f"  GUI floor set to: {self.calibrated_floor:.1f} dB")
 
             # Get the number of input channels from the device
             self.CHANNELS = device_info['max_input_channels']
@@ -264,267 +213,51 @@ class AudioCore:
             raise RuntimeError(f"Failed to initialize audio: {str(e)}")
 
     # ----------------------------------------------------------------
-    # Convert from float -> PCM int16 for VAD, etc.
+    # Audio format conversion
     # ----------------------------------------------------------------
-    def bytes_to_float32_audio(self, audio_data, sample_rate=None):
-        """
-        Convert int16-encoded bytes to float32 samples in [-1..1].
-        This is typically what your client is sending/receiving.
-        """
-        # Debug: Log incoming bytes
-        print(f"[AUDIO DEBUG] bytes_to_float32_audio input size: {len(audio_data)} bytes")
-        
-        # Convert to int16
-        audio_int16 = np.frombuffer(audio_data, dtype=np.int16)
-        print(f"[AUDIO DEBUG] int16 array shape: {audio_int16.shape}")
-        
-        # Convert to float32
-        audio_float32 = audio_int16.astype(np.float32) / 32768.0
-        print(f"[AUDIO DEBUG] Conversion stats - int16 range: [{np.min(audio_int16)}, {np.max(audio_int16)}], float32 range: [{np.min(audio_float32):.3f}, {np.max(audio_float32):.3f}]")
-        
-        return audio_float32, (sample_rate if sample_rate is not None else self.DESIRED_RATE)
-
-    # ----------------------------------------------------------------
-    # NEW: Real-time VAD visualization function
-    # ----------------------------------------------------------------
-    def convert_to_mono(self, audio_data):
-        """
-        Convert multi-channel audio to mono by taking the left channel.
-        This provides cleaner input for VAD compared to channel averaging.
-        
-        Args:
-            audio_data: numpy array of shape (frames, channels) or (frames,) for mono
-            
-        Returns:
-            numpy array of shape (frames,) containing mono audio from left channel
-        """
-        if len(audio_data.shape) == 2 and audio_data.shape[1] > 1:
-            return audio_data[:, 0]  # Take left channel
-        return audio_data
-
-    def process_audio_vad(self, audio_data):
-        """
-        Process audio purely for VAD visualization without utterance logic.
-        This function focuses on immediate speech detection for the GUI.
-        
-        Args:
-            audio_data: float32 array of audio samples (already mono and resampled to 16kHz)
-            
-        Returns:
-            bool: True if speech is detected in this frame
-        """
-        print(f"[VAD DEBUG] Input audio shape: {audio_data.shape}, range: [{audio_data.min():.3f}, {audio_data.max():.3f}]")
-        
-        # Convert float32 to int16 for WebRTC VAD
-        int16_data = np.clip(audio_data * 32767.0, -32767, 32767).astype(np.int16)
-        self._vad_visualization_buffer.extend(int16_data.tobytes())
-        
-        # Process VAD frames (20ms at 16kHz = 320 samples)
-        frame_size = int(0.02 * 16000)  # 320 samples
-        is_speech_frame = False
-        speech_frames = 0
-        total_frames = 0
-        
-        while len(self._vad_visualization_buffer) >= (frame_size * 2):  # *2 for int16
-            frame = self._vad_visualization_buffer[:(frame_size * 2)]
-            self._vad_visualization_buffer = self._vad_visualization_buffer[(frame_size * 2):]
-            total_frames += 1
-            
-            try:
-                frame_is_speech = self.vad.is_speech(frame, sample_rate=16000)
-                if frame_is_speech:
-                    speech_frames += 1
-                    self.consecutive_vad_speech += 1
-                    if self.consecutive_vad_speech >= self.vad_speech_threshold:
-                        is_speech_frame = True
-                else:
-                    self.consecutive_vad_speech = max(0, self.consecutive_vad_speech - 1)
-            except Exception as e:
-                print(f"[VAD ERROR] Frame processing failed: {e}")
-                self.consecutive_vad_speech = 0
-        
-        if total_frames > 0:
-            print(f"[VAD DEBUG] Processed {total_frames} frames, {speech_frames} had speech")
-        
-        # Return true if we saw enough consecutive speech frames
-        return is_speech_frame or self.consecutive_vad_speech >= self.vad_speech_threshold
-
-    # ----------------------------------------------------------------
-    # The "process_audio" function:
-    # 1) Takes a float32 buffer
-    # 2) Convert to 16-bit PCM
-    # 3) Break into 20ms frames for WebRTC VAD
-    # 4) Update speech state
-    # 5) Return 'is_speech' (the overall gate state)
-    # ----------------------------------------------------------------
-    def reset_preroll(self):
-        """Reset the preroll buffer and speech state"""
-        self.preroll_buffer.clear()
-        self.audio_buffer = []
-        self.speech_frames = 0
-        self.silence_frames = 0
-        self.is_speaking = False
-        self.speech_start_time = None
-        self._vad_buffer = bytearray()
-
-    def get_preroll_audio(self):
-        """Get pre-roll audio if we've had enough silence to reset."""
-        now = time.time()
-        if now - self.last_speech_end > self.preroll_duration:
-            # Convert deque to list, excluding most recent chunk
-            preroll = list(self.preroll_buffer)[:-int(self.DESIRED_RATE * 0.1)]  # Exclude last 100ms
-            return preroll if len(preroll) > 0 else []
-        return []
-
     def process_audio(self, audio_data):
         """
-        Process audio through WebRTC VAD with improved preroll and state handling.
-        Returns dict with audio data and speech detection results.
+        Process audio for client-side level monitoring.
         
         Args:
             audio_data: float32 array of audio samples (multi-channel or mono)
             
         Returns:
-            dict: Contains processed audio data and speech detection results
+            dict: Contains processed audio data and level information
         """
         # Convert to mono if multi-channel
-        audio_data = self.convert_to_mono(audio_data)
-        # Calculate RMS and update levels for GUI
-        if len(audio_data) > 0:
-            block_rms = np.sqrt(np.mean(audio_data**2))
-            instant_rms_db = 20.0 * np.log10(max(block_rms, 1e-10))
+        audio_data = audio_utils.convert_to_mono(audio_data)
+        
+        # Calculate levels and update tracking
+        instant_rms_db, instant_peak_db = audio_utils.calculate_audio_levels(audio_data)
+        
+        now = time.time()
+        self.last_update = now
 
-            now = time.time()
-            self.last_update = now
+        # Smoothed level tracking with faster attack, slower release
+        if instant_rms_db > self.rms_level:
+            self.rms_level += 0.7 * (instant_rms_db - self.rms_level)
+        else:
+            self.rms_level += 0.3 * (instant_rms_db - self.rms_level)
+        
+        if instant_peak_db > self.peak_level:
+            self.peak_level = instant_peak_db
+        else:
+            self.peak_level *= 0.95  # Slightly faster decay
 
-            # Smoothed level tracking with faster attack, slower release
-            if instant_rms_db > self.rms_level:
-                self.rms_level += 0.7 * (instant_rms_db - self.rms_level)
-            else:
-                self.rms_level += 0.3 * (instant_rms_db - self.rms_level)
-            
-            if instant_rms_db > self.peak_level:
-                self.peak_level = instant_rms_db
-            else:
-                self.peak_level *= 0.95  # Slightly faster decay
-
-        # Add to preroll buffer after level calculations
-        for sample in audio_data:
-            self.preroll_buffer.append(sample)
-
-        # Convert float32 to int16 for WebRTC VAD
-        int16_data = np.clip(audio_data * 32767.0, -32767, 32767).astype(np.int16)
-        pcm_bytes = int16_data.tobytes()
-        self._vad_buffer.extend(pcm_bytes)
-
-        # Process VAD frames (20ms at 16kHz = 320 samples)
-        frame_size = int(0.02 * 16000)  # 320 samples
-        speech_detected = False
-        consecutive_speech = 0
-        frame_count = 0
-        speech_frames = 0
-
-        print(f"[VAD DEBUG] Processing buffer size: {len(self._vad_buffer)} bytes")
-
-        while len(self._vad_buffer) >= (frame_size * 2):  # *2 for int16
-            frame = self._vad_buffer[:(frame_size * 2)]
-            self._vad_buffer = self._vad_buffer[(frame_size * 2):]
-            frame_count += 1
-
-            try:
-                frame_is_speech = self.vad.is_speech(frame, sample_rate=16000)
-                if frame_is_speech:
-                    speech_frames += 1
-                    consecutive_speech += 1
-                    self.speech_frames += 1
-                    self.silence_frames = 0
-                    if consecutive_speech >= self.vad_speech_threshold:  # Use configured threshold
-                        speech_detected = True
-                else:
-                    consecutive_speech = 0
-                    self.silence_frames += 1
-                    self.speech_frames = max(0, self.speech_frames - 1)  # Gradual decrease
-            except Exception as e:
-                print(f"[VAD ERROR] Frame processing failed: {e}")
-                frame_is_speech = False
-
-        if frame_count > 0:
-            print(f"[VAD DEBUG] Processed {frame_count} frames, {speech_frames} had speech")
-
-        # State machine update with hysteresis
-        audio_ready = False  # Flag to indicate if we should run ASR
-        final_audio = None
-
-        if not self.is_speaking:
-            if speech_detected and self.speech_frames >= self.start_speech_frames:
-                # Speech start
-                self.is_speaking = True
-                self.speech_start_time = time.time()
-                self.last_speech_level = self.rms_level
-                
-                # Get preroll if enough silence has passed
-                preroll = self.get_preroll_audio()
-                if preroll:
-                    self.audio_buffer = preroll
-                else:
-                    self.audio_buffer = []
-                
-                # Add current chunk
-                self.audio_buffer.extend(audio_data)
-                
-        else:  # Currently speaking
-            if speech_detected or self.silence_frames < self.end_silence_frames:
-                # Continue speech
-                self.audio_buffer.extend(audio_data)
-                if speech_detected:
-                    self.last_speech_level = max(self.last_speech_level, self.rms_level)
-            else:
-                # Speech end - capture the complete utterance
-                audio_ready = True
-                final_audio = np.array(self.audio_buffer)  # Get the complete utterance
-                speech_duration = time.time() - self.speech_start_time
-                
-                # Mark speech end but keep state until after ASR
-                self.is_speaking = False
-                self.last_speech_end = time.time()
-
-        # Prepare base result
-        result = {
+        # Return audio metrics
+        return {
             'db_level': self.rms_level,
             'noise_floor': self.noise_floor,
             'peak_level': self.peak_level,
-            'last_speech_level': self.last_speech_level,
-            'is_complete': False,
-            'is_speech': False,
-            'speech_duration': 0
+            'audio': audio_data
         }
 
-        if audio_ready and final_audio is not None and speech_duration > 0:
-            # We have a complete utterance
-            is_valid_speech = speech_duration >= self.min_speech_duration
-            if is_valid_speech:
-                result.update({
-                    'audio': final_audio,
-                    'is_speech': True,
-                    'speech_duration': speech_duration,
-                    'is_complete': True
-                })
-            
-            # Reset state after capturing everything we need
-            self.speech_start_time = None
-            self.reset_preroll()
-        else:
-            # During speech or silence
-            result.update({
-                'audio': audio_data
-            })
-
-        return result
-
     # ----------------------------------------------------------------
-    # If the server or client needs to close resources
+    # Resource cleanup
     # ----------------------------------------------------------------
     def close(self):
+        """Clean up audio resources."""
         if self.stream is not None:
             try:
                 self.stream.stop()

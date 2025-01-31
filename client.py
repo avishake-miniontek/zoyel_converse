@@ -117,12 +117,7 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
                 if needs_resampling and resampler:
                     audio_data = resampler.process(audio_data, ratio, end_of_input=False)
 
-                # Optionally update GUI with VAD status
-                if audio_interface and audio_interface.has_gui:
-                    is_speech = audio_core.process_audio_vad(audio_data)
-                    audio_interface.process_vad(is_speech)
-
-                # Convert to int16
+                # Convert to int16 and send to server
                 final_data = np.clip(audio_data * 32767.0, -32767, 32767).astype(np.int16)
 
                 # Send to server
@@ -216,13 +211,24 @@ async def receive_transcripts(websocket, audio_interface):
             await asyncio.sleep(0.1)
             continue
 
-        # If it's bytes, it's TTS frames from the server
+        # If it's bytes, check the frame type
         if isinstance(msg, bytes):
             try:
-                # Hand off to audio_output
-                asyncio.create_task(audio_output.play_chunk(msg))
+                if len(msg) >= 9:  # Minimum frame size (4 magic + 1 type + 4 length)
+                    magic = msg[:4]
+                    frame_type = msg[4]
+                    if magic == b'MIRA':
+                        if frame_type == 0x01:  # Audio data
+                            # Hand off to audio_output
+                            asyncio.create_task(audio_output.play_chunk(msg[9:]))
+                        elif frame_type == 0x02:  # End of utterance
+                            pass  # Handle end frame
+                        elif frame_type == 0x03:  # VAD status
+                            if audio_interface and audio_interface.has_gui:
+                                is_speech = bool(msg[9])
+                                audio_interface.process_vad(is_speech)
             except Exception as e:
-                print(f"[ERROR] Failed to queue TTS chunk: {e}")
+                print(f"[ERROR] Failed to process frame: {e}")
                 import traceback
                 print(traceback.format_exc())
             continue

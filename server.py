@@ -56,7 +56,10 @@ has_gpu = select_gpu()
 import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from kokoro import KPipeline
-from src.audio_core import AudioCore
+
+# Import our modules
+from src.server_audio_core import ServerAudioCore
+from src import audio_utils
 
 # Load configuration
 with open('config.json', 'r') as f:
@@ -124,12 +127,14 @@ TTS_MAX_BATCH_SIZE = 4   # Maximum items in TTS batch before forcing processing
 # Frame type (1 byte): 
 #   0x01 = Audio data
 #   0x02 = End of utterance
+#   0x03 = VAD status
 # Frame length (4 bytes): Length of payload in bytes
 # Payload: Audio data (for type 0x01) or empty (for type 0x02)
 
 MAGIC_BYTES = b'MIRA'
 FRAME_TYPE_AUDIO = 0x01
 FRAME_TYPE_END = 0x02
+FRAME_TYPE_VAD = 0x03
 
 def create_frame(frame_type, payload=b''):
     """Create a framed message."""
@@ -145,7 +150,7 @@ class AudioServer:
         with open('config.json', 'r') as f:
             self.config = json.load(f)
             
-        self.audio_core = AudioCore()
+        self.audio_core = ServerAudioCore()
         self.audio_core.noise_floor = -96.0
         self.audio_core.min_floor = -96.0
         self.audio_core.max_floor = -36.0
@@ -493,7 +498,7 @@ async def transcribe_audio(websocket):
                     # Debug: Log incoming audio data details
                     print(f"[AUDIO DEBUG] Received chunk size: {len(message)} bytes")
                     
-                    chunk_data, sr = server.audio_core.bytes_to_float32_audio(message, sample_rate=16000)
+                    chunk_data, sr = audio_utils.bytes_to_float32_audio(message, sample_rate=16000)
                     print(f"[AUDIO DEBUG] Converted chunk shape: {chunk_data.shape}, dtype: {chunk_data.dtype}")
                     print(f"[AUDIO DEBUG] Audio range: min={chunk_data.min():.3f}, max={chunk_data.max():.3f}, mean={chunk_data.mean():.3f}")
                     
@@ -503,6 +508,11 @@ async def transcribe_audio(websocket):
                     if result.get('is_speech'):
                         print(f"[AUDIO DEBUG] Speech detected - duration: {result.get('speech_duration', 0):.2f}s, level: {result.get('db_level', 0):.1f}dB")
 
+                    # Send VAD status to client for GUI
+                    vad_frame = create_frame(FRAME_TYPE_VAD, bytes([1 if result['is_speech'] else 0]))
+                    await websocket.send(vad_frame)
+
+                    # Process complete utterances
                     if result.get('is_complete') and result.get('is_speech'):
                         audio = result.get('audio')
                         if audio is not None and len(audio) > 0:

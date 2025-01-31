@@ -5,6 +5,7 @@ import platform
 import struct
 from scipy import signal
 import time
+import asyncio
 
 class AudioOutput:
     """
@@ -47,9 +48,8 @@ class AudioOutput:
 
     def _find_output_device(self, device_name=None):
         """
-        Find and return (device_idx, device_info) for an output device.
-        If device_name is provided, it tries to match that first.
-        Otherwise it tries platform-specific heuristics, then falls back to default.
+        Find an appropriate device. If device_name is specified, look for it by name.
+        Otherwise, use the system default or the first output device we find.
         """
         devices = sd.query_devices()
         output_devices = []
@@ -57,55 +57,35 @@ class AudioOutput:
         print("\n[AUDIO] Available output devices:")
         for i, dev in enumerate(devices):
             if dev['max_output_channels'] > 0:
-                print(f"  Device {i}: {dev['name']} (outputs={dev['max_output_channels']}, rate={dev['default_samplerate']}Hz)")
+                print(f"  Device {i}: {dev['name']} "
+                      f"(outputs={dev['max_output_channels']}, "
+                      f"rate={dev['default_samplerate']:.0f}Hz)")
                 output_devices.append((i, dev))
 
-        system = platform.system()
-
-        # If a specific device name is given, try exact match first
         if device_name:
+            # Look for exact match
             for i, dev in output_devices:
                 if dev['name'] == device_name:
-                    print(f"[AUDIO] Selected device by name: {dev['name']}")
+                    print(f"\n[AUDIO] Selected output device: {dev['name']}")
                     self.current_device = dev
                     return i, dev
 
-        # Otherwise, platform-specific logic or fallback to default
-        if system == 'Linux':
-            # Try pipewire or pulse, etc.
-            preferred_keywords = ['pipewire', 'pulse', 'default']
-            for keyword in preferred_keywords:
-                for i, dev in output_devices:
-                    if keyword in dev['name'].lower():
-                        print(f"[AUDIO] Selected Linux device: {dev['name']}")
-                        self.current_device = dev
-                        return i, dev
-        elif system == 'Windows':
-            # Try typical Windows device keywords
-            preferred_keywords = ['speakers', 'headphones', 'wasapi', 'realtek', 'hdmi']
-            for keyword in preferred_keywords:
-                for i, dev in output_devices:
-                    if keyword in dev['name'].lower():
-                        print(f"[AUDIO] Selected Windows device: {dev['name']}")
-                        self.current_device = dev
-                        return i, dev
-
-        # Fallback to default device
-        default_output = sd.default.device[1]  # default output index
-        if default_output is not None and 0 <= default_output < len(devices):
-            device_info = devices[default_output]
-            print(f"[AUDIO] Selected default device: {device_info['name']}")
+        # Otherwise pick default or the first available
+        default_idx = sd.default.device[1]
+        if default_idx is not None and 0 <= default_idx < len(devices):
+            device_info = devices[default_idx]
+            print(f"\n[AUDIO] Selected default device: {device_info['name']}")
             self.current_device = device_info
-            return default_output, device_info
+            return default_idx, device_info
 
-        # If all else fails, pick the first output device
+        # Fallback: first valid device
         if output_devices:
             i, dev = output_devices[0]
-            print(f"[AUDIO] Selected fallback device: {dev['name']}")
+            print(f"\n[AUDIO] Selected first available device: {dev['name']}")
             self.current_device = dev
             return i, dev
 
-        raise RuntimeError("[AUDIO] No suitable output device found.")
+        raise RuntimeError("[AUDIO] No suitable output devices found.")
 
     def get_device_name(self):
         if self.current_device:
@@ -144,25 +124,50 @@ class AudioOutput:
             return
         self._do_initialize(device_name=device_name)
 
+    async def _open_stream(self, device_idx):
+        """
+        Internal method to open the audio stream with better error handling. 
+        """
+        try:
+            stream_kwargs = {
+                'device': device_idx,
+                'samplerate': self.device_rate,
+                'channels': 2,
+                'dtype': np.float32,
+                'latency': 'high',  # higher latency => more stable in many environments
+                'callback': self._audio_callback
+            }
+
+            print(f"[AUDIO] Opening stream with settings: {stream_kwargs}")
+            self.stream = sd.OutputStream(**stream_kwargs)
+            self.stream.start()
+            await asyncio.sleep(0.2)  # Give the stream a moment to stabilize
+            print("[AUDIO] Stream started successfully.")
+
+        except Exception as e:
+            print(f"[AUDIO] Failed to open stream: {e}")
+            if self.stream:
+                self.stream.close()
+            self.stream = None
+            raise RuntimeError(f"[AUDIO] Could not open output stream: {e}")
+
     def _do_initialize(self, device_name=None):
         """
         The actual device init logic (shared by sync and async methods).
         """
         device_idx, dev_info = self._find_output_device(device_name=device_name)
         self.device_rate = int(dev_info['default_samplerate'])
-
-        stream_kwargs = {
-            'device': device_idx,
-            'samplerate': self.device_rate,
-            'channels': 2,
-            'dtype': np.float32,
-            'blocksize': 1024,   # A stable block size for callback
-            'callback': self._audio_callback,
-        }
-
-        self.stream = sd.OutputStream(**stream_kwargs)
-        self.stream.start()
-        print(f"[AUDIO] Stream started on device: {dev_info['name']} at {self.device_rate} Hz")
+        
+        # Create an event loop for the async _open_stream call
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(self._open_stream(device_idx))
+            print(f"[AUDIO] Stream started on device: {dev_info['name']} at {self.device_rate} Hz")
+        except Exception as e:
+            print(f"[AUDIO] Error in _do_initialize: {e}")
+            raise
+        finally:
+            loop.close()
 
     ###########################################################################
     # CALLBACK & QUEUE

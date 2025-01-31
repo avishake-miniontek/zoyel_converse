@@ -159,16 +159,6 @@ class AudioOutput:
             'blocksize': 1024,   # A stable block size for callback
             'callback': self._audio_callback,
         }
-        # Windows-specific WASAPI config
-        if platform.system() == 'Windows':
-            # Use shared (exclusive=False) to avoid device conflicts
-            # This param is available if we pass a dict to extra_settings
-            try:
-                import sounddevice as sd_mod
-                wasapi = sd_mod.WasapiSettings(exclusive=False)
-                stream_kwargs['extra_settings'] = wasapi
-            except:
-                pass
 
         self.stream = sd.OutputStream(**stream_kwargs)
         self.stream.start()

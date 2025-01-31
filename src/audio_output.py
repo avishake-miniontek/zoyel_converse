@@ -58,9 +58,7 @@ class AudioOutput:
         print("\n[AUDIO] Available output devices:")
         for i, dev in enumerate(devices):
             if dev['max_output_channels'] > 0:
-                print(f"  Device {i}: {dev['name']} "
-                      f"(outputs={dev['max_output_channels']}, "
-                      f"rate={dev['default_samplerate']:.0f}Hz)")
+                print(f"  Device {i}: {dev['name']}, ALSA ({dev['max_input_channels']} in, {dev['max_output_channels']} out)")
                 output_devices.append((i, dev))
 
         # Check if audio_devices is present in config
@@ -69,18 +67,12 @@ class AudioOutput:
         
         if 'audio_devices' in config and 'output_device' in config['audio_devices']:
             output_device = config['audio_devices']['output_device']
-            # Handle both numeric index and name string
+            # Handle numeric index directly - don't try to match by name
+            # since client.py no longer converts indices to names
             if isinstance(output_device, (int, float)):
                 device_idx = int(output_device)
                 for i, dev in output_devices:
                     if i == device_idx:
-                        print(f"\n[AUDIO] Selected output device: {dev['name']}")
-                        self.current_device = dev
-                        return i, dev
-            else:
-                # Try matching by name
-                for i, dev in output_devices:
-                    if dev['name'] == output_device:
                         print(f"\n[AUDIO] Selected output device: {dev['name']}")
                         self.current_device = dev
                         return i, dev

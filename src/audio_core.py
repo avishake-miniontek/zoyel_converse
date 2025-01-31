@@ -142,33 +142,28 @@ class AudioCore:
         but we won't rely on it for gating. The gating is handled by WebRTC VAD.
         """
         try:
-            print("\nListing audio devices:")
-            print(sd.query_devices())
-
             system = platform.system().lower()
             if system == 'linux':
                 warnings.filterwarnings("ignore", category=RuntimeWarning, module="sounddevice")
 
             devices = sd.query_devices()
+            print("\nListing audio devices:")
+            for i, dev in enumerate(devices):
+                if dev['max_input_channels'] > 0:
+                    print(f"   {i} {dev['name']}, ALSA ({dev['max_input_channels']} in, {dev['max_output_channels']} out)")
             working_device = None
             device_info = None
 
             # Check if audio_devices is present in config
             if 'audio_devices' in self.config and 'input_device' in self.config['audio_devices']:
                 input_device = self.config['audio_devices']['input_device']
-                # Handle both numeric index and name string
+                # Handle numeric index directly - don't try to match by name
+                # since client.py no longer converts indices to names
                 if isinstance(input_device, (int, float)):
                     device_idx = int(input_device)
                     if 0 <= device_idx < len(devices):
                         device_info = devices[device_idx]
                         working_device = device_idx
-                else:
-                    # Try matching by name
-                    for i, device in enumerate(devices):
-                        if device['name'] == input_device:
-                            working_device = i
-                            device_info = device
-                            break
             else:
                 # Use existing auto device selection logic
                 for i, device in enumerate(devices):

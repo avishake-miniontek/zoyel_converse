@@ -48,20 +48,8 @@ from src.audio_output import AudioOutput  # The updated file from above
 with open('config.json', 'r') as f:
     CONFIG = json.load(f)
 
-# Convert numeric device indices to names if present
-if 'audio_devices' in CONFIG:
-    import sounddevice as sd
-    devices = sd.query_devices()
-    
-    if 'input_device' in CONFIG['audio_devices']:
-        input_idx = CONFIG['audio_devices']['input_device']
-        if isinstance(input_idx, (int, float)) and 0 <= int(input_idx) < len(devices):
-            CONFIG['audio_devices']['input_device'] = devices[int(input_idx)]['name']
-            
-    if 'output_device' in CONFIG['audio_devices']:
-        output_idx = CONFIG['audio_devices']['output_device']
-        if isinstance(output_idx, (int, float)) and 0 <= int(output_idx) < len(devices):
-            CONFIG['audio_devices']['output_device'] = devices[int(output_idx)]['name']
+    # Don't convert indices to names - let each class handle device selection
+    # This prevents issues with name format mismatches between input/output handlers
 
 # Server configuration
 API_KEY = CONFIG['server']['websocket']['api_key']

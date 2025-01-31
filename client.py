@@ -48,6 +48,21 @@ from src.audio_output import AudioOutput  # The updated file from above
 with open('config.json', 'r') as f:
     CONFIG = json.load(f)
 
+# Convert numeric device indices to names if present
+if 'audio_devices' in CONFIG:
+    import sounddevice as sd
+    devices = sd.query_devices()
+    
+    if 'input_device' in CONFIG['audio_devices']:
+        input_idx = CONFIG['audio_devices']['input_device']
+        if isinstance(input_idx, (int, float)) and 0 <= int(input_idx) < len(devices):
+            CONFIG['audio_devices']['input_device'] = devices[int(input_idx)]['name']
+            
+    if 'output_device' in CONFIG['audio_devices']:
+        output_idx = CONFIG['audio_devices']['output_device']
+        if isinstance(output_idx, (int, float)) and 0 <= int(output_idx) < len(devices):
+            CONFIG['audio_devices']['output_device'] = devices[int(output_idx)]['name']
+
 # Server configuration
 API_KEY = CONFIG['server']['websocket']['api_key']
 SERVER_HOST = CONFIG['server']['websocket']['host']
@@ -458,7 +473,7 @@ def run_client():
             'input_device_name': "Initializing...",
             'output_device_name': audio_output.get_device_name(),
             'on_input_change': None,
-            'on_output_change': audio_output.set_device_by_name
+            'on_output_change': lambda name: audio_output.set_device_by_name(name)
         }
         if use_gui:
             audio_interface = GraphicalInterface(**interface_params)

@@ -153,17 +153,24 @@ class AudioCore:
             working_device = None
             device_info = None
 
-            # Check config for specified input device
-            input_device_name = self.config.get('audio_input_device')
-            if input_device_name:
-                for i, device in enumerate(devices):
-                    if device['name'] == input_device_name:
-                        working_device = i
-                        device_info = device
-                        break
-
-            # If no device specified, use auto-detect logic
-            if working_device is None:
+            # Check if audio_devices is present in config
+            if 'audio_devices' in self.config and 'input_device' in self.config['audio_devices']:
+                input_device = self.config['audio_devices']['input_device']
+                # Handle both numeric index and name string
+                if isinstance(input_device, (int, float)):
+                    device_idx = int(input_device)
+                    if 0 <= device_idx < len(devices):
+                        device_info = devices[device_idx]
+                        working_device = device_idx
+                else:
+                    # Try matching by name
+                    for i, device in enumerate(devices):
+                        if device['name'] == input_device:
+                            working_device = i
+                            device_info = device
+                            break
+            else:
+                # Use existing auto device selection logic
                 for i, device in enumerate(devices):
                     if device['max_input_channels'] > 0:
                         # Example: prefer a name with 'microphone' on macOS

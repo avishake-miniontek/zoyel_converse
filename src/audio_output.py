@@ -1,3 +1,4 @@
+import json
 import sounddevice as sd
 import numpy as np
 from collections import deque
@@ -23,8 +24,7 @@ class AudioOutput:
     FRAME_TYPE_END = 0x02
     HEADER_SIZE = 9  # 4 magic + 1 frame_type + 4 length
 
-    def __init__(self, config=None):
-        self.config = config
+    def __init__(self):
         self.input_rate = 24000           # TTS audio sample rate
         self.device_rate = None           # Will set after device selection
         self.stream = None
@@ -55,31 +55,44 @@ class AudioOutput:
         devices = sd.query_devices()
         output_devices = []
 
-        # Check config for specified output device
-        if self.config and self.config.get('audio_output_device'):
-            output_device_name = self.config.get('audio_output_device')
-            for i, dev in enumerate(devices):
-                if dev['name'] == output_device_name:
-                    device_idx = i
-                    device_info = dev
-                    print(f"\n[AUDIO] Selected output device: {dev['name']}")
-                    self.current_device = dev
-                    break
-        else:
-            print("\n[AUDIO] Available output devices:")
-            for i, dev in enumerate(devices):
-                if dev['max_output_channels'] > 0:
-                    print(f"  Device {i}: {dev['name']} "
-                          f"(outputs={dev['max_output_channels']}, "
-                          f"rate={dev['default_samplerate']:.0f}Hz)")
-                    output_devices.append((i, dev))
-            if device_name:
-                # Look for exact match
+        print("\n[AUDIO] Available output devices:")
+        for i, dev in enumerate(devices):
+            if dev['max_output_channels'] > 0:
+                print(f"  Device {i}: {dev['name']} "
+                      f"(outputs={dev['max_output_channels']}, "
+                      f"rate={dev['default_samplerate']:.0f}Hz)")
+                output_devices.append((i, dev))
+
+        # Check if audio_devices is present in config
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+        
+        if 'audio_devices' in config and 'output_device' in config['audio_devices']:
+            output_device = config['audio_devices']['output_device']
+            # Handle both numeric index and name string
+            if isinstance(output_device, (int, float)):
+                device_idx = int(output_device)
                 for i, dev in output_devices:
-                    if dev['name'] == device_name:
+                    if i == device_idx:
                         print(f"\n[AUDIO] Selected output device: {dev['name']}")
                         self.current_device = dev
                         return i, dev
+            else:
+                # Try matching by name
+                for i, dev in output_devices:
+                    if dev['name'] == output_device:
+                        print(f"\n[AUDIO] Selected output device: {dev['name']}")
+                        self.current_device = dev
+                        return i, dev
+        
+        # If no output_device specified or not found, use existing logic
+        if device_name:
+            # Look for exact match
+            for i, dev in output_devices:
+                if dev['name'] == device_name:
+                    print(f"\n[AUDIO] Selected output device: {dev['name']}")
+                    self.current_device = dev
+                    return i, dev
 
         # Otherwise pick default or the first available
         default_idx = sd.default.device[1]
@@ -103,7 +116,7 @@ class AudioOutput:
             return self.current_device['name']
         return "No device selected"
 
-    async def set_device_by_name(self, device_name):
+    def set_device_by_name(self, device_name):
         """
         Switch to a new device by name, re-initializing the stream if needed.
         """
@@ -112,7 +125,7 @@ class AudioOutput:
         if self.stream:
             self.stream.close()
             self.stream = None
-        await self.initialize(device_name=device_name)
+        self.initialize_sync(device_name=device_name)
         if self.playing:
             self.start_stream()
 

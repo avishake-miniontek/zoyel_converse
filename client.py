@@ -109,21 +109,21 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
                     await asyncio.sleep(0.1)
                     continue
 
-                # Convert multi-channel to mono if needed
+                # First convert to mono if needed
                 if len(audio_data.shape) == 2 and audio_data.shape[1] > 1:
                     audio_data = audio_data[:, 0]  # Take left channel
+
+                # Then resample to 16kHz if needed
+                if needs_resampling and resampler:
+                    audio_data = resampler.process(audio_data, ratio, end_of_input=False)
 
                 # Optionally update GUI with VAD status
                 if audio_interface and audio_interface.has_gui:
                     is_speech = audio_core.process_audio_vad(audio_data)
                     audio_interface.process_vad(is_speech)
 
-                # Convert to int16 @ 16kHz
-                if needs_resampling and resampler:
-                    resampled = resampler.process(audio_data, ratio, end_of_input=False)
-                    final_data = np.clip(resampled * 32768.0, -32768, 32767).astype(np.int16)
-                else:
-                    final_data = np.clip(audio_data * 32768.0, -32768, 32767).astype(np.int16)
+                # Convert to int16
+                final_data = np.clip(audio_data * 32767.0, -32767, 32767).astype(np.int16)
 
                 # Send to server
                 try:

@@ -73,7 +73,7 @@ class AudioCore:
         self.was_speech = False  # Track if we were speaking in previous chunk
 
         # Speech detection thresholds
-        self.start_speech_frames = 2  # must see 'speech' in 2+ consecutive frames
+        self.start_speech_frames = self.config['speech_detection']['vad_settings'].get('consecutive_threshold', 2)
         self.end_silence_frames = int(
             self.config['speech_detection']['end_silence_duration'] / (self.VAD_FRAME_MS / 1000.0)
         )
@@ -81,7 +81,7 @@ class AudioCore:
 
         # NEW: For real-time VAD visualization
         self.consecutive_vad_speech = 0
-        self.vad_speech_threshold = 2  # Number of consecutive speech frames needed
+        self.vad_speech_threshold = self.config['speech_detection']['vad_settings'].get('consecutive_threshold', 2)
         self._vad_visualization_buffer = bytearray()
 
     # ----------------------------------------------------------------
@@ -308,35 +308,43 @@ class AudioCore:
         This function focuses on immediate speech detection for the GUI.
         
         Args:
-            audio_data: float32 array of audio samples (multi-channel or mono)
+            audio_data: float32 array of audio samples (already mono and resampled to 16kHz)
             
         Returns:
             bool: True if speech is detected in this frame
         """
-        # Convert to mono if multi-channel
-        audio_data = self.convert_to_mono(audio_data)
+        print(f"[VAD DEBUG] Input audio shape: {audio_data.shape}, range: [{audio_data.min():.3f}, {audio_data.max():.3f}]")
+        
         # Convert float32 to int16 for WebRTC VAD
         int16_data = np.clip(audio_data * 32767.0, -32767, 32767).astype(np.int16)
-        pcm_bytes = int16_data.tobytes()
-        self._vad_visualization_buffer.extend(pcm_bytes)
+        self._vad_visualization_buffer.extend(int16_data.tobytes())
         
-        # Process VAD frames
+        # Process VAD frames (20ms at 16kHz = 320 samples)
+        frame_size = int(0.02 * 16000)  # 320 samples
         is_speech_frame = False
+        speech_frames = 0
+        total_frames = 0
         
-        while len(self._vad_visualization_buffer) >= (self.VAD_FRAME_SIZE * 2):
-            frame = self._vad_visualization_buffer[:(self.VAD_FRAME_SIZE * 2)]
-            self._vad_visualization_buffer = self._vad_visualization_buffer[(self.VAD_FRAME_SIZE * 2):]
+        while len(self._vad_visualization_buffer) >= (frame_size * 2):  # *2 for int16
+            frame = self._vad_visualization_buffer[:(frame_size * 2)]
+            self._vad_visualization_buffer = self._vad_visualization_buffer[(frame_size * 2):]
+            total_frames += 1
             
             try:
                 frame_is_speech = self.vad.is_speech(frame, sample_rate=16000)
                 if frame_is_speech:
+                    speech_frames += 1
                     self.consecutive_vad_speech += 1
                     if self.consecutive_vad_speech >= self.vad_speech_threshold:
                         is_speech_frame = True
                 else:
                     self.consecutive_vad_speech = max(0, self.consecutive_vad_speech - 1)
             except Exception as e:
+                print(f"[VAD ERROR] Frame processing failed: {e}")
                 self.consecutive_vad_speech = 0
+        
+        if total_frames > 0:
+            print(f"[VAD DEBUG] Processed {total_frames} frames, {speech_frames} had speech")
         
         # Return true if we saw enough consecutive speech frames
         return is_speech_frame or self.consecutive_vad_speech >= self.vad_speech_threshold
@@ -409,31 +417,39 @@ class AudioCore:
         pcm_bytes = int16_data.tobytes()
         self._vad_buffer.extend(pcm_bytes)
 
-        # Process VAD frames
+        # Process VAD frames (20ms at 16kHz = 320 samples)
+        frame_size = int(0.02 * 16000)  # 320 samples
         speech_detected = False
         consecutive_speech = 0
         frame_count = 0
+        speech_frames = 0
 
-        while len(self._vad_buffer) >= (self.VAD_FRAME_SIZE * 2):
-            frame = self._vad_buffer[:(self.VAD_FRAME_SIZE * 2)]
-            self._vad_buffer = self._vad_buffer[(self.VAD_FRAME_SIZE * 2):]
+        print(f"[VAD DEBUG] Processing buffer size: {len(self._vad_buffer)} bytes")
+
+        while len(self._vad_buffer) >= (frame_size * 2):  # *2 for int16
+            frame = self._vad_buffer[:(frame_size * 2)]
+            self._vad_buffer = self._vad_buffer[(frame_size * 2):]
             frame_count += 1
 
             try:
                 frame_is_speech = self.vad.is_speech(frame, sample_rate=16000)
+                if frame_is_speech:
+                    speech_frames += 1
+                    consecutive_speech += 1
+                    self.speech_frames += 1
+                    self.silence_frames = 0
+                    if consecutive_speech >= self.vad_speech_threshold:  # Use configured threshold
+                        speech_detected = True
+                else:
+                    consecutive_speech = 0
+                    self.silence_frames += 1
+                    self.speech_frames = max(0, self.speech_frames - 1)  # Gradual decrease
             except Exception as e:
+                print(f"[VAD ERROR] Frame processing failed: {e}")
                 frame_is_speech = False
 
-            if frame_is_speech:
-                consecutive_speech += 1
-                self.speech_frames += 1
-                self.silence_frames = 0
-                if consecutive_speech >= 2:  # Need at least 2 consecutive speech frames
-                    speech_detected = True
-            else:
-                consecutive_speech = 0
-                self.silence_frames += 1
-                self.speech_frames = max(0, self.speech_frames - 1)  # Gradual decrease
+        if frame_count > 0:
+            print(f"[VAD DEBUG] Processed {frame_count} frames, {speech_frames} had speech")
 
         # State machine update with hysteresis
         audio_ready = False  # Flag to indicate if we should run ASR

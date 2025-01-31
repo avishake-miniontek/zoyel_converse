@@ -31,7 +31,7 @@ class AudioCore:
         self.rate = None
         self.needs_resampling = None
         self.CHUNK = self.config['audio_processing']['chunk_size']
-        self.CHANNELS = 1
+        self.CHANNELS = None  # Will be set based on device
         self.DESIRED_RATE = self.config['audio_processing']['desired_rate']
 
         # We'll still track some "floor" for your GUI, but it's not used by the VAD gating
@@ -237,11 +237,15 @@ class AudioCore:
 
             print(f"  GUI floor set to: {self.calibrated_floor:.1f} dB (not used by VAD)")
 
+            # Get the number of input channels from the device
+            self.CHANNELS = device_info['max_input_channels']
+            print(f"  Number of channels: {self.CHANNELS}")
+
             # Open the main stream for continuous capture
             print("\nOpening main input stream...")
             stream = sd.InputStream(
                 device=working_device,
-                channels=1,
+                channels=self.CHANNELS,  # Use actual channel count
                 samplerate=rate,
                 dtype=np.float32,
                 blocksize=self.CHUNK
@@ -272,17 +276,33 @@ class AudioCore:
     # ----------------------------------------------------------------
     # NEW: Real-time VAD visualization function
     # ----------------------------------------------------------------
+    def convert_to_mono(self, audio_data):
+        """
+        Convert multi-channel audio to mono by averaging all channels.
+        
+        Args:
+            audio_data: numpy array of shape (frames, channels) or (frames,) for mono
+            
+        Returns:
+            numpy array of shape (frames,) containing mono audio
+        """
+        if len(audio_data.shape) == 2 and audio_data.shape[1] > 1:
+            return np.mean(audio_data, axis=1)
+        return audio_data
+
     def process_audio_vad(self, audio_data):
         """
         Process audio purely for VAD visualization without utterance logic.
         This function focuses on immediate speech detection for the GUI.
         
         Args:
-            audio_data: float32 array of audio samples
+            audio_data: float32 array of audio samples (multi-channel or mono)
             
         Returns:
             bool: True if speech is detected in this frame
         """
+        # Convert to mono if multi-channel
+        audio_data = self.convert_to_mono(audio_data)
         # Convert float32 to int16 for WebRTC VAD
         int16_data = np.clip(audio_data * 32767.0, -32767, 32767).astype(np.int16)
         pcm_bytes = int16_data.tobytes()
@@ -340,7 +360,15 @@ class AudioCore:
         """
         Process audio through WebRTC VAD with improved preroll and state handling.
         Returns dict with audio data and speech detection results.
+        
+        Args:
+            audio_data: float32 array of audio samples (multi-channel or mono)
+            
+        Returns:
+            dict: Contains processed audio data and speech detection results
         """
+        # Convert to mono if multi-channel
+        audio_data = self.convert_to_mono(audio_data)
         # Calculate RMS and update levels for GUI
         if len(audio_data) > 0:
             block_rms = np.sqrt(np.mean(audio_data**2))

@@ -98,7 +98,9 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
             try:
                 # Read audio chunk from mic with error handling
                 try:
-                    audio_data = stream.read(audio_core.CHUNK)[0]  # float32 array
+                    # Read returns tuple (data, overflowed)
+                    # data shape is (frames, channels) for multi-channel
+                    audio_data = stream.read(audio_core.CHUNK)[0]
                 except Exception as e:
                     if isinstance(e, sd.PortAudioError) and "Invalid stream pointer" in str(e):
                         print(f"Fatal stream error: {e}")
@@ -106,6 +108,10 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
                     print(f"Stream read error: {e}")
                     await asyncio.sleep(0.1)
                     continue
+
+                # Convert multi-channel to mono if needed
+                if len(audio_data.shape) == 2 and audio_data.shape[1] > 1:
+                    audio_data = np.mean(audio_data, axis=1)
 
                 # Optionally update GUI with VAD status
                 if audio_interface and audio_interface.has_gui:

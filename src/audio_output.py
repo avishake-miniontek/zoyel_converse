@@ -23,7 +23,8 @@ class AudioOutput:
     FRAME_TYPE_END = 0x02
     HEADER_SIZE = 9  # 4 magic + 1 frame_type + 4 length
 
-    def __init__(self):
+    def __init__(self, config=None):
+        self.config = config
         self.input_rate = 24000           # TTS audio sample rate
         self.device_rate = None           # Will set after device selection
         self.stream = None
@@ -54,21 +55,31 @@ class AudioOutput:
         devices = sd.query_devices()
         output_devices = []
 
-        print("\n[AUDIO] Available output devices:")
-        for i, dev in enumerate(devices):
-            if dev['max_output_channels'] > 0:
-                print(f"  Device {i}: {dev['name']} "
-                      f"(outputs={dev['max_output_channels']}, "
-                      f"rate={dev['default_samplerate']:.0f}Hz)")
-                output_devices.append((i, dev))
-
-        if device_name:
-            # Look for exact match
-            for i, dev in output_devices:
-                if dev['name'] == device_name:
+        # Check config for specified output device
+        if self.config and self.config.get('audio_output_device'):
+            output_device_name = self.config.get('audio_output_device')
+            for i, dev in enumerate(devices):
+                if dev['name'] == output_device_name:
+                    device_idx = i
+                    device_info = dev
                     print(f"\n[AUDIO] Selected output device: {dev['name']}")
                     self.current_device = dev
-                    return i, dev
+                    break
+        else:
+            print("\n[AUDIO] Available output devices:")
+            for i, dev in enumerate(devices):
+                if dev['max_output_channels'] > 0:
+                    print(f"  Device {i}: {dev['name']} "
+                          f"(outputs={dev['max_output_channels']}, "
+                          f"rate={dev['default_samplerate']:.0f}Hz)")
+                    output_devices.append((i, dev))
+            if device_name:
+                # Look for exact match
+                for i, dev in output_devices:
+                    if dev['name'] == device_name:
+                        print(f"\n[AUDIO] Selected output device: {dev['name']}")
+                        self.current_device = dev
+                        return i, dev
 
         # Otherwise pick default or the first available
         default_idx = sd.default.device[1]

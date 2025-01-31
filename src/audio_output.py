@@ -58,7 +58,7 @@ class AudioOutput:
         print("\n[AUDIO] Available output devices:")
         for i, dev in enumerate(devices):
             if dev['max_output_channels'] > 0:
-                print(f"  Device {i}: {dev['name']}, ALSA ({dev['max_input_channels']} in, {dev['max_output_channels']} out)")
+                print(f"   {i} {dev['name']}, ALSA ({dev['max_input_channels']} in, {dev['max_output_channels']} out)")
                 output_devices.append((i, dev))
 
         # Check if audio_devices is present in config

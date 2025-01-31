@@ -30,6 +30,7 @@ import queue
 import json
 import time
 import argparse
+import sounddevice as sd
 
 # Conditionally import GUI modules
 gui_available = True
@@ -95,10 +96,13 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
 
         while True:
             try:
-                # Read audio chunk from mic
+                # Read audio chunk from mic with error handling
                 try:
                     audio_data = stream.read(audio_core.CHUNK)[0]  # float32 array
                 except Exception as e:
+                    if isinstance(e, sd.PortAudioError) and "Invalid stream pointer" in str(e):
+                        print(f"Fatal stream error: {e}")
+                        raise  # This will trigger reconnection
                     print(f"Stream read error: {e}")
                     await asyncio.sleep(0.1)
                     continue

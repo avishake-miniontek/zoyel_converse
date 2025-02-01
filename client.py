@@ -7,7 +7,7 @@ real-time transcription, and displays the transcribed text. It also receives
 TTS audio data from the server, which it plays via AudioOutput.
 
 Usage:
-    python client.py
+    python client.py [--no-gui]
 
 It will:
 1. Connect to the transcription server
@@ -106,9 +106,9 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
                     await asyncio.sleep(0.1)
                     continue
 
-                # First convert to mono if needed
+                # Convert stereo to mono by averaging the channels
                 if len(audio_data.shape) == 2 and audio_data.shape[1] > 1:
-                    audio_data = audio_data[:, 0]  # Take left channel
+                    audio_data = np.mean(audio_data, axis=1)
 
                 # Then resample to 16kHz if needed
                 if needs_resampling and resampler:

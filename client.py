@@ -9,11 +9,9 @@ TTS audio data from the server, which it plays via AudioOutput.
 Usage:
     python client.py [--no-gui]
 
-It will:
-1. Connect to the transcription server
-2. Select a microphone
-3. Start streaming audio
-4. Display any transcripts and handle TTS playback
+In addition to its normal operation, this version saves a local WAV file every
+10 seconds containing the post-processed audio being sent to the server. This
+helps you inspect the original client-side audio for debugging.
 """
 
 import asyncio
@@ -31,6 +29,8 @@ import json
 import time
 import argparse
 import sounddevice as sd
+import datetime
+from scipy.io.wavfile import write as wav_write
 
 # Conditionally import GUI modules
 gui_available = True
@@ -67,11 +67,16 @@ TRIGGER_WORD = CONFIG['assistant']['name']
 
 async def record_and_send_audio(websocket, audio_interface, audio_core):
     """
-    Continuously read audio from the microphone and send raw PCM frames to the server.
+    Continuously read audio from the microphone, send raw PCM frames to the server,
+    and (for debugging) save a WAV file locally every 10 seconds.
     The audio is automatically resampled to 16kHz if needed.
     """
     error_count = 0
     max_errors = 3
+
+    # Buffer to accumulate audio for local saving
+    save_buffer = []  # Each element is a numpy array (int16)
+    last_save_time = time.time()
     
     try:
         if not audio_core or not audio_core.stream:
@@ -101,7 +106,7 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
                 except Exception as e:
                     if isinstance(e, sd.PortAudioError) and "Invalid stream pointer" in str(e):
                         print(f"Fatal stream error: {e}")
-                        raise  # This will trigger reconnection
+                        raise  # Trigger reconnection
                     print(f"Stream read error: {e}")
                     await asyncio.sleep(0.1)
                     continue
@@ -110,14 +115,31 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
                 if len(audio_data.shape) == 2 and audio_data.shape[1] > 1:
                     audio_data = np.mean(audio_data, axis=1)
 
-                # Then resample to 16kHz if needed
+                # Resample to 16kHz if needed
                 if needs_resampling and resampler:
                     audio_data = resampler.process(audio_data, ratio, end_of_input=False)
 
-                # Convert to int16 and send to server
+                # Scale to int16
                 final_data = np.clip(audio_data * 32767.0, -32767, 32767).astype(np.int16)
+                
+                # Append to local save buffer (for debugging)
+                save_buffer.append(final_data.copy())
 
-                # Send to server
+                # Save a WAV file every 10 seconds
+                current_time = time.time()
+                if current_time - last_save_time >= 10:
+                    try:
+                        combined = np.concatenate(save_buffer)
+                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"client_record_{timestamp}.wav"
+                        wav_write(filename, 16000, combined)
+                        print(f"[DEBUG] Saved local recording to {filename}")
+                    except Exception as e:
+                        print(f"[DEBUG] Error saving WAV file: {e}")
+                    save_buffer = []
+                    last_save_time = current_time
+
+                # Send the audio to the server
                 try:
                     await websocket.send(final_data.tobytes())
                     error_count = 0
@@ -151,31 +173,29 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
         print(f"Error in record_and_send_audio: {e}")
         raise
     finally:
-        # Do not close the stream here; audio_core manages it
+        # Do not close the stream here; audio_core manages it.
         pass
 
 async def receive_transcripts(websocket, audio_interface):
     """
     Continuously receive transcripts (text) and TTS frames (bytes) from the server.
-    If it's text, we handle possible LLM triggers. If it's bytes, we hand it to audio_output
-    for playback. This approach uses 'audio_output.play_chunk(...)' for the TTS frames.
+    If text is received, handle potential LLM triggers. If binary frames are received,
+    pass them to audio_output for playback.
     """
     error_count = 0
     max_errors = 3
 
     llm_client = LLMClient()
 
-    # Access the globally-initialized audio_output (we'll init it below main).
     global audio_output
 
     async def handle_llm_chunk(text):
-        """When LLM yields text, send it back to server as TTS request."""
+        """When LLM yields text, send it to the server as a TTS request."""
         await websocket.send(f"TTS:{text}")
 
     async def process_text(text: str):
-        """Send text to the LLM, cause TTS output, etc."""
+        """Send text to the LLM for processing."""
         try:
-            # Prepend the trigger if missing
             if not text.lower().startswith(TRIGGER_WORD.lower()):
                 text = f"{TRIGGER_WORD}, {text}"
             await audio_output.start_stream()
@@ -190,7 +210,6 @@ async def receive_transcripts(websocket, audio_interface):
             msg = await asyncio.wait_for(websocket.recv(), timeout=0.1)
             error_count = 0
         except asyncio.TimeoutError:
-            # Check if user typed text in GUI
             if audio_interface and audio_interface.has_gui:
                 text_input = audio_interface.get_text_input()
                 if text_input is not None:
@@ -208,21 +227,17 @@ async def receive_transcripts(websocket, audio_interface):
             await asyncio.sleep(0.1)
             continue
 
-        # Process binary messages and text messages separately
         if isinstance(msg, bytes):
             try:
-                if len(msg) >= 9:  # Minimum frame size (4 magic + 1 type + 4 length)
+                if len(msg) >= 9:
                     magic = msg[:4]
                     frame_type = msg[4]
                     if magic == b'MIRA':
                         if frame_type == 0x03:
-                            # VAD status frame; process it directly (payload is at msg[9])
                             if audio_interface and audio_interface.has_gui:
                                 is_speech = bool(msg[9])
                                 audio_interface.process_vad(is_speech)
                         else:
-                            # For audio data (0x01) and end-of-utterance (0x02) frames,
-                            # pass the full frame (header + payload) to the audio output.
                             asyncio.create_task(audio_output.play_chunk(msg))
             except Exception as e:
                 print(f"[ERROR] Failed to process frame: {e}")
@@ -230,17 +245,14 @@ async def receive_transcripts(websocket, audio_interface):
                 print(traceback.format_exc())
             continue
 
-        # Otherwise it's text
         if msg == "TTS_ERROR":
             print("[ERROR] Server TTS generation failed.")
             continue
 
-        # Check for the trigger word in text messages
         msg_lower = msg.lower()
         trigger_pos = msg_lower.find(TRIGGER_WORD.lower())
         if trigger_pos != -1:
             print(f"\n[TRANSCRIPT] {msg}")
-            # Everything from trigger to end
             trigger_text = msg[trigger_pos:]
             try:
                 await audio_output.start_stream()
@@ -250,7 +262,8 @@ async def receive_transcripts(websocket, audio_interface):
 
 class AsyncThread(threading.Thread):
     """
-    Runs the main async loop to connect to server, handle mic audio, and transcripts.
+    Runs the main async loop to connect to the server, handle microphone audio,
+    and receive transcripts.
     """
     def __init__(self, audio_interface, audio_core):
         super().__init__()
@@ -263,16 +276,15 @@ class AsyncThread(threading.Thread):
         self.daemon = True
 
     async def connect_to_server(self):
-        """Connect to the WebSocket server and handle auth."""
+        """Connect to the WebSocket server and perform basic auth."""
         try:
             self.websocket = await websockets.connect(SERVER_URI)
             print(f"Connected to {SERVER_URI}")
 
-            # Wait for auth
+            # Wait for auth confirmation from server
             auth_response = await asyncio.wait_for(self.websocket.recv(), timeout=2.0)
             if auth_response != "AUTH_OK":
                 raise Exception(f"Auth failed: {auth_response}")
-
             return True
         except Exception as e:
             print(f"[ERROR] connect_to_server: {e}")
@@ -281,14 +293,16 @@ class AsyncThread(threading.Thread):
             return False
 
     async def handle_server_connection(self):
-        """Attempt to connect + start tasks, with retries."""
+        """
+        Attempt to connect and then start tasks.
+        (Note: Noise floor functionality has been removed.)
+        """
         retry_count = 0
         max_retries = CONFIG['client']['retry']['max_attempts']
         delay_seconds = CONFIG['client']['retry']['delay_seconds']
 
         while retry_count < max_retries and self.running:
             print(f"\nAttempting to connect... (attempt {retry_count+1}/{max_retries})")
-
             if not await self.connect_to_server():
                 retry_count += 1
                 if retry_count < max_retries:
@@ -296,75 +310,40 @@ class AsyncThread(threading.Thread):
                     await asyncio.sleep(delay_seconds)
                 continue
 
-            # Send calibrated noise floor
-            try:
-                nf_str = f"NOISE_FLOOR:{self.audio_core.noise_floor}:{CLIENT_ID}"
-                print(f"Sending noise floor: {nf_str}")
-                await self.websocket.send(nf_str)
+            print("[CLIENT] Server ready.")
 
-                response = await asyncio.wait_for(self.websocket.recv(), timeout=5.0)
-                if response != "READY":
-                    print(f"[ERROR] Unexpected server response: {response}")
-                    continue
-                print("[CLIENT] Server ready.")
+            self.tasks = [
+                asyncio.create_task(record_and_send_audio(self.websocket, self.audio_interface, self.audio_core)),
+                asyncio.create_task(receive_transcripts(self.websocket, self.audio_interface))
+            ]
 
-                # Start tasks: mic->server, transcripts->console
-                self.tasks = [
-                    asyncio.create_task(record_and_send_audio(self.websocket, self.audio_interface, self.audio_core)),
-                    asyncio.create_task(receive_transcripts(self.websocket, self.audio_interface))
-                ]
+            done, pending = await asyncio.wait(self.tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
-                done, pending = await asyncio.wait(self.tasks, return_when=asyncio.FIRST_COMPLETED)
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
+            if not self.running:
+                return
 
-                if not self.running:
-                    return
-
-                print("[CLIENT] Connection lost, will retry...")
-                retry_count += 1
-                if retry_count < max_retries:
-                    print(f"Retrying in {delay_seconds} seconds...")
-                    await asyncio.sleep(delay_seconds)
-
-            except asyncio.TimeoutError:
-                print("[CLIENT] Timed out waiting for server.")
-                continue
-            except websockets.ConnectionClosed:
-                print("[CLIENT] WebSocket closed.")
-                continue
-            except Exception as e:
-                print(f"[CLIENT] Server comm error: {e}")
-                continue
-
-        if retry_count >= max_retries:
-            print("[CLIENT] Max retries exceeded. Shutting down.")
-            self.running = False
-            if self.audio_interface and self.audio_interface.has_gui:
-                self.audio_interface.root.after(0, self.audio_interface._on_closing)
+            print("[CLIENT] Connection lost, will retry...")
+            retry_count += 1
+            if retry_count < max_retries:
+                print(f"Retrying in {delay_seconds} seconds...")
+                await asyncio.sleep(delay_seconds)
 
     async def initialize_audio(self):
-        """Initialize mic + speaker."""
+        """Initialize microphone and speaker."""
         try:
-            # Initialize audio output (speaker)
             await audio_output.initialize()
-
-            # Initialize mic (audio_core)
             stream, device_info, rate, needs_resampling = self.audio_core.init_audio_device()
             if None in (stream, device_info, rate, needs_resampling):
-                print("[CLIENT] Error init mic.")
+                print("[CLIENT] Error initializing microphone.")
                 return False
 
-            # If you have a GUI, show selected device
             if self.audio_interface and self.audio_interface.has_gui:
                 self.audio_interface.input_device_queue.put(device_info['name'])
 
-            if self.audio_core.noise_floor is None:
-                print("[CLIENT] Error: No noise floor calibration.")
-                return False
-
-            print(f"[CLIENT] Noise floor: {self.audio_core.noise_floor:.1f} dB")
+            print(f"[CLIENT] Audio initialized. Device: {device_info['name']}")
             return True
         except Exception as e:
             print(f"[CLIENT] Audio init error: {e}")
@@ -373,11 +352,8 @@ class AsyncThread(threading.Thread):
     async def async_main(self):
         """Main async loop for the client."""
         try:
-            # Initialize audio (mic + output)
             if not await self.initialize_audio():
                 return
-
-            # Handle server connect + run tasks
             await self.handle_server_connection()
         except Exception as e:
             print(f"[CLIENT] Error in async main: {e}")
@@ -385,16 +361,14 @@ class AsyncThread(threading.Thread):
             await self.cleanup()
 
     async def cleanup(self):
-        """Clean up resources (audio, tasks)."""
+        """Clean up resources."""
         try:
             if audio_output:
                 await audio_output.close()
             if self.audio_core:
                 self.audio_core.close()
-
             if self.websocket:
                 await self.websocket.close()
-
             for t in self.tasks:
                 if not t.done():
                     t.cancel()
@@ -402,7 +376,6 @@ class AsyncThread(threading.Thread):
                     await t
                 except asyncio.CancelledError:
                     pass
-
         except Exception as e:
             print(f"[CLIENT] Error during cleanup: {e}")
 
@@ -438,8 +411,8 @@ class AsyncThread(threading.Thread):
 
 def run_client():
     """
-    Entrypoint for the client. Handles CLI args, chooses GUI or headless,
-    spawns AsyncThread, and runs until done.
+    Entrypoint for the client. Handles CLI args, selects GUI or headless mode,
+    spawns AsyncThread, and runs until termination.
     """
     global audio_output
 
@@ -449,27 +422,20 @@ def run_client():
 
     try:
         parser = argparse.ArgumentParser(description='Audio Chat Client')
-        parser.add_argument('--no-gui', action='store_true',
-                            help='Run in headless mode')
+        parser.add_argument('--no-gui', action='store_true', help='Run in headless mode')
         args = parser.parse_args()
 
         use_gui = not args.no_gui and gui_available
 
-        # For macOS + tkinter
         if use_gui and platform.system() == 'Darwin':
             os.environ['OBJC_DISABLE_INITIALIZE_FORK_SAFETY'] = 'YES'
             os.environ['TK_SILENCE_DEPRECATION'] = '1'
 
-        # 1) Create our AudioOutput global instance
         audio_output = AudioOutput()
-
-        # 2) Initialize it synchronously just to confirm device
         audio_output.initialize_sync()
 
-        # 3) Create the AudioCore for microphone
         audio_core = AudioCore()
 
-        # 4) Create interface
         interface_params = {
             'input_device_name': "Initializing...",
             'output_device_name': audio_output.get_device_name(),
@@ -484,11 +450,9 @@ def run_client():
             audio_interface = HeadlessAudioInterface(**interface_params)
             print("[CLIENT] Running in headless mode.")
 
-        # 5) Start our main async thread
         async_thread = AsyncThread(audio_interface, audio_core)
         async_thread.start()
 
-        # 6) If GUI mode, run mainloop
         if use_gui:
             def on_window_close():
                 print("[CLIENT] Window close -> stopping.")
@@ -501,7 +465,6 @@ def run_client():
             audio_interface.root.protocol("WM_DELETE_WINDOW", on_window_close)
             audio_interface.root.mainloop()
         else:
-            # Headless -> wait for ctrl+C
             while async_thread.is_alive():
                 time.sleep(0.1)
 

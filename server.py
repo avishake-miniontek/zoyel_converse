@@ -10,6 +10,8 @@ import os
 import struct
 from collections import deque
 from urllib.parse import urlparse, parse_qs
+import datetime
+from scipy.io.wavfile import write as wav_write
 
 ################################################################################
 # GPU SELECTION
@@ -184,17 +186,11 @@ class AudioServer:
         with open('config.json', 'r') as f:
             self.config = json.load(f)
             
+        # Initialize the ServerAudioCore; all VAD processing is done within it.
         self.audio_core = ServerAudioCore()
-        self.audio_core.noise_floor = -96.0
-        self.audio_core.min_floor = -96.0
-        self.audio_core.max_floor = -36.0
-        self.audio_core.rms_level = -96.0
-        self.audio_core.peak_level = -96.0
-
+        # (No noise floor calibration is applied here.)
+        
         self.enable_voice_filtering = False
-        self.client_noise_floor = -96.0
-        self.current_voice_profile = None
-        self.voice_profile_timestamp = None
 
         self.transcript_history = deque(maxlen=10)
         self.min_confidence = 0.4
@@ -605,16 +601,30 @@ async def transcribe_audio(websocket):
                                 print("[ASR] Processing complete utterance...")
                                 print(f"[ASR DEBUG] Audio shape: {audio.shape}, duration: {len(audio)/16000:.2f}s")
                                 
+                                # Debug: Check utterance duration
+                                utterance_duration = len(audio) / 16000.0
+                                print(f"[DEBUG] Detected utterance duration: {utterance_duration:.2f}s")
+                                if utterance_duration < 1.0:
+                                    print("[WARNING] Utterance duration is very short; possible premature cutoff due to VAD settings.")
+                                
+                                # Save the utterance as a WAV file for debugging purposes.
+                                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                                wav_filename = f"utterance_{timestamp}.wav"
+                                # Convert float32 audio (-1.0 to 1.0) to int16 PCM
+                                audio_int16 = np.clip(audio * 32767.0, -32768, 32767).astype(np.int16)
+                                wav_write(wav_filename, 16000, audio_int16)
+                                print(f"[DEBUG] Saved utterance to {wav_filename}")
+                                
                                 try:
                                     # Ensure audio is in the correct format and shape
                                     if audio.dtype != np.float32:
                                         audio = audio.astype(np.float32)
                                     
-                                    # Ensure audio is mono (single channel)
+                                    # Ensure audio is mono (average if multi-channel)
                                     if len(audio.shape) > 1:
-                                        if audio.shape[1] > 1:  # Multi-channel
+                                        if audio.shape[1] > 1:
                                             audio = np.mean(audio, axis=1)
-                                        else:  # Already mono but needs reshaping
+                                        else:
                                             audio = audio.squeeze()
                                     
                                     # Verify audio is 1D
@@ -659,38 +669,11 @@ async def transcribe_audio(websocket):
 
             elif isinstance(message, str):
                 # Control / TTS
-                if message.startswith("NOISE_FLOOR:"):
-                    try:
-                        parts = message.split(":")
-                        noise_floor = float(parts[1])
-                        msg_client_id = parts[2] if len(parts) > 2 else None
-
-                        if msg_client_id != client_id:
-                            print(f"NOISE_FLOOR client mismatch. Expected {client_id}, got {msg_client_id}")
-                            continue
-
-                        if -120 < noise_floor < 0:
-                            server.client_noise_floor = noise_floor
-                            server.audio_core.noise_floor = noise_floor
-                            server.audio_core.min_floor = noise_floor - 5
-                            server.audio_core.max_floor = noise_floor + 45
-                            print(f"Set {client_id} noise floor to {noise_floor:.1f} dB")
-                            await websocket.send("READY")
-                        else:
-                            print(f"Invalid noise floor: {noise_floor}")
-                            await websocket.send("ERROR:Invalid noise floor")
-
-                    except Exception as e:
-                        print(f"Error with noise floor from {client_id}: {e}")
-                        await websocket.send("ERROR:Noise floor fail")
-
-                elif message.strip() == "VOICE_FILTER_ON":
+                if message.strip() == "VOICE_FILTER_ON":
                     server.enable_voice_filtering = True
                     print(f"Voice filter ON for {client_id}")
                 elif message.strip() == "VOICE_FILTER_OFF":
                     server.enable_voice_filtering = False
-                    server.current_voice_profile = None
-                    server.voice_profile_timestamp = None
                     print(f"Voice filter OFF for {client_id}")
                 elif message.strip() == "RESET":
                     print(f"Buffer reset by {client_id}")

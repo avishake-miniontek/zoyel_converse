@@ -85,24 +85,58 @@ torch_dtype = torch.float16 if has_gpu else torch.float32
 MODEL_PATH = CONFIG['server']['models']['whisper']['path']
 
 print(f"Device set to {device}")
-print("Loading ASR model & processor...")
+print(f"Loading ASR model & processor from: {MODEL_PATH}")
 
-model = AutoModelForSpeechSeq2Seq.from_pretrained(
-    MODEL_PATH,
-    torch_dtype=torch_dtype,
-    low_cpu_mem_usage=True,
-    use_safetensors=True
-).to(device)
+try:
+    print("Loading Whisper model...")
+    model = AutoModelForSpeechSeq2Seq.from_pretrained(
+        MODEL_PATH,
+        torch_dtype=torch_dtype,
+        low_cpu_mem_usage=True,
+        use_safetensors=True
+    )
+    print(f"Model loaded successfully. Moving to device {device}")
+    model = model.to(device)
+    print("Model moved to device successfully")
 
-processor = AutoProcessor.from_pretrained(MODEL_PATH)
-asr_pipeline = pipeline(
-    "automatic-speech-recognition",
-    model=model,
-    tokenizer=processor.tokenizer,
-    feature_extractor=processor.feature_extractor,
-    torch_dtype=torch_dtype,
-    device=device,
-)
+    print("Loading processor...")
+    processor = AutoProcessor.from_pretrained(MODEL_PATH)
+    print("Processor loaded successfully")
+
+    print("Creating ASR pipeline...")
+    asr_pipeline = pipeline(
+        "automatic-speech-recognition",
+        model=model,
+        tokenizer=processor.tokenizer,
+        feature_extractor=processor.feature_extractor,
+        torch_dtype=torch_dtype,
+        device=device,
+        batch_size=1,  # Process one utterance at a time
+        return_timestamps=False,  # Don't need timestamps for basic transcription
+        chunk_length_s=30,  # Process in 30-second chunks
+    )
+    print("ASR pipeline created successfully")
+    
+    # Verify the pipeline is working with a simple test
+    print("Testing ASR pipeline with silence...")
+    test_audio = np.zeros((16000,), dtype=np.float32)  # 1 second of silence
+    test_result = asr_pipeline(
+        {"array": test_audio, "sampling_rate": 16000},
+        generate_kwargs={
+            "task": "transcribe",
+            "language": "en",
+            "use_cache": True,
+            "num_beams": 1,
+            "do_sample": False
+        }
+    )
+    print(f"ASR pipeline test result: {test_result}")
+    
+except Exception as e:
+    print(f"Error loading ASR components: {str(e)}")
+    import traceback
+    print(f"Full traceback:\n{traceback.format_exc()}")
+    sys.exit(1)
 
 print("Loading Kokoro TTS model...")
 voice_name = CONFIG['server']['models']['kokoro']['voice_name']
@@ -434,29 +468,90 @@ async def process_asr_batch(server, force=False):
             sub_batch = server.asr_batch[i:i + ASR_SUB_BATCH_SIZE]
             sub_batch_clients = server.asr_batch_clients[i:i + ASR_SUB_BATCH_SIZE]
             
-            asr_results = asr_pipeline(
-                sub_batch,
-                return_timestamps=True,
-                generate_kwargs={
-                    "task": "transcribe",
-                    "language": "english",
-                    "use_cache": False
-                }
-            )
+            print(f"[ASR] Processing sub-batch of size {len(sub_batch)}")
+            for item in sub_batch:
+                print(f"[ASR DEBUG] Input shape: {item['array'].shape}, dtype: {item['array'].dtype}, "
+                      f"range: [{item['array'].min():.3f}, {item['array'].max():.3f}]")
+            
+            try:
+                print("[ASR] Running Whisper model on audio...")
+                print(f"[ASR DEBUG] Processing batch of size: {len(sub_batch)}")
+                for idx, item in enumerate(sub_batch):
+                    print(f"[ASR DEBUG] Batch item {idx} - Shape: {item['array'].shape}, "
+                          f"Sample rate: {item['sampling_rate']}, "
+                          f"Duration: {len(item['array'])/item['sampling_rate']:.2f}s")
+                
+                try:
+                    print("[ASR DEBUG] Pipeline input format:")
+                    if isinstance(sub_batch, list):
+                        print(f"[ASR DEBUG] Batch is a list of {len(sub_batch)} items")
+                        for i, item in enumerate(sub_batch):
+                            print(f"[ASR DEBUG] Item {i} keys: {item.keys()}")
+                    else:
+                        print(f"[ASR DEBUG] Batch is type: {type(sub_batch)}")
+                    
+                    # Process each audio input individually
+                    asr_results = []
+                    for item in sub_batch:
+                        try:
+                            print(f"[ASR DEBUG] Processing single audio input - Shape: {item['array'].shape}, "
+                                  f"Duration: {len(item['array'])/item['sampling_rate']:.2f}s")
+                            
+                            # Ensure we're working with numpy arrays
+                            audio_array = item["array"]
+                            if torch.is_tensor(audio_array):
+                                audio_array = audio_array.cpu().numpy()
+                            
+                            print(f"[ASR DEBUG] Input array shape: {audio_array.shape}")
+                            
+                            result = asr_pipeline(
+                                {"array": audio_array, "sampling_rate": item["sampling_rate"]},
+                                generate_kwargs={
+                                    "task": "transcribe",
+                                    "language": "en",
+                                    "use_cache": True,
+                                    "num_beams": 1,
+                                    "do_sample": False
+                                }
+                            )
+                            print(f"[ASR DEBUG] Single result: {result}")
+                            asr_results.append(result)
+                        except Exception as e:
+                            print(f"[ASR ERROR] Failed to process audio input: {e}")
+                            import traceback
+                            print(f"[ASR ERROR] Traceback:\n{traceback.format_exc()}")
+                except Exception as e:
+                    print(f"[ASR ERROR] Pipeline execution failed with error: {str(e)}")
+                    import traceback
+                    print(f"[ASR ERROR] Full traceback:\n{traceback.format_exc()}")
+                    raise
+                print(f"[ASR DEBUG] Pipeline completed")
+                print(f"[ASR DEBUG] Results type: {type(asr_results)}")
+                print(f"[ASR DEBUG] Results content: {asr_results}")
+            except Exception as e:
+                print(f"[ASR ERROR] Pipeline failed: {e}")
+                import traceback
+                print(traceback.format_exc())
+                continue
 
             # Process results for this sub-batch
             for idx, asr_result in enumerate(asr_results):
-                client_id, websocket, speech_duration = sub_batch_clients[idx]
-                transcript = asr_result["text"].strip()
-                confidence = asr_result.get("confidence", 0.0)
+                try:
+                    client_id, websocket, speech_duration = sub_batch_clients[idx]
+                    transcript = asr_result["text"].strip()
+                    confidence = asr_result.get("confidence", 0.0)
+                    print(f"[ASR] Result {idx}: text='{transcript}', confidence={confidence}")
 
-                if transcript and server.should_process_transcript(
-                    transcript,
-                    confidence,
-                    speech_duration
-                ):
-                    print(f"[ASR] {client_id}: '{transcript}'")
-                    await websocket.send(transcript)
+                    if transcript and server.should_process_transcript(
+                        transcript,
+                        confidence,
+                        speech_duration
+                    ):
+                        print(f"[ASR] {client_id}: '{transcript}'")
+                        await websocket.send(transcript)
+                except Exception as e:
+                    print(f"[ASR] Error processing result {idx}: {e}")
+                    continue
 
     except Exception as e:
         print(f"ASR Batch processing error: {e}")
@@ -495,49 +590,70 @@ async def transcribe_audio(websocket):
             if isinstance(message, bytes):
                 # Microphone audio
                 try:
-                    # Debug: Log incoming audio data details
-                    print(f"[AUDIO DEBUG] Received chunk size: {len(message)} bytes")
-                    
-                    chunk_data, sr = audio_utils.bytes_to_float32_audio(message, sample_rate=16000)
-                    print(f"[AUDIO DEBUG] Converted chunk shape: {chunk_data.shape}, dtype: {chunk_data.dtype}")
-                    print(f"[AUDIO DEBUG] Audio range: min={chunk_data.min():.3f}, max={chunk_data.max():.3f}, mean={chunk_data.mean():.3f}")
-                    
-                    result = server.audio_core.process_audio(chunk_data)
-                    
-                    # Debug: Log VAD results
-                    if result.get('is_speech'):
-                        print(f"[AUDIO DEBUG] Speech detected - duration: {result.get('speech_duration', 0):.2f}s, level: {result.get('db_level', 0):.1f}dB")
+                    # Process incoming audio through VAD
+                    result = server.audio_core.process_audio(message)
 
                     # Send VAD status to client for GUI
                     vad_frame = create_frame(FRAME_TYPE_VAD, bytes([1 if result['is_speech'] else 0]))
                     await websocket.send(vad_frame)
 
                     # Process complete utterances
-                    if result.get('is_complete') and result.get('is_speech'):
+                    if result.get('is_complete'):
                         audio = result.get('audio')
                         if audio is not None and len(audio) > 0:
                             try:
-                                # Add to ASR batch
-                                server.asr_batch.append({
-                                    "array": audio,
-                                    "sampling_rate": sr
-                                })
-                                server.asr_batch_clients.append((
-                                    client_id,
-                                    websocket,
-                                    result['speech_duration']
-                                ))
-                                server.asr_batch_last_update = time.time()
-
-                                # Process batch immediately when speech ends
-                                await process_asr_batch(server, force=True)
-
+                                print("[ASR] Processing complete utterance...")
+                                print(f"[ASR DEBUG] Audio shape: {audio.shape}, duration: {len(audio)/16000:.2f}s")
+                                
+                                try:
+                                    # Ensure audio is in the correct format and shape
+                                    if audio.dtype != np.float32:
+                                        audio = audio.astype(np.float32)
+                                    
+                                    # Ensure audio is mono (single channel)
+                                    if len(audio.shape) > 1:
+                                        if audio.shape[1] > 1:  # Multi-channel
+                                            audio = np.mean(audio, axis=1)
+                                        else:  # Already mono but needs reshaping
+                                            audio = audio.squeeze()
+                                    
+                                    # Verify audio is 1D
+                                    if len(audio.shape) != 1:
+                                        print(f"[ASR ERROR] Unexpected audio shape after processing: {audio.shape}")
+                                        continue
+                                    
+                                    print(f"[ASR DEBUG] Processed audio shape: {audio.shape}, range: [{audio.min():.3f}, {audio.max():.3f}]")
+                                    
+                                    print("[ASR] Running Whisper inference...")
+                                    transcription = asr_pipeline(
+                                        {"array": audio, "sampling_rate": 16000},
+                                        generate_kwargs={
+                                            "task": "transcribe",
+                                            "language": "en",
+                                            "use_cache": True,
+                                            "num_beams": 1,
+                                            "do_sample": False
+                                        }
+                                    )
+                                    
+                                    print(f"[ASR] Raw transcription: {transcription}")
+                                    
+                                    if transcription and server.should_process_transcript(
+                                        transcription["text"],
+                                        transcription.get("confidence", 0.0),
+                                        result['speech_duration']
+                                    ):
+                                        print(f"[ASR] Final transcript for {client_id}: '{transcription['text']}'")
+                                        await websocket.send(transcription["text"])
+                                        
+                                except Exception as e:
+                                    print(f"[ASR ERROR] Pipeline execution failed: {e}")
+                                    import traceback
+                                    print(f"[ASR ERROR] Full traceback:\n{traceback.format_exc()}")
                             except Exception as e:
                                 print(f"ASR Error: {e}")
-                                # Clear batch on error
                                 server.asr_batch.clear()
                                 server.asr_batch_clients.clear()
-
                 except Exception as e:
                     print(f"Error processing audio from {client_id}: {e}")
 
@@ -605,17 +721,14 @@ async def transcribe_audio(websocket):
                 print(f"[TTS] Processing remaining buffered text before disconnect: '{remaining}'")
                 try:
                     await handle_tts_multi_utterances(websocket, remaining + ".", client_id)
-                    # Process any remaining TTS batch
                     if server.tts_batch:
                         await process_tts_batch(server, force=True)
                 except Exception as e:
                     print(f"[TTS] Error processing final buffer: {e}")
             
-            # Process any remaining ASR batch
             if server.asr_batch:
                 await process_asr_batch(server, force=True)
             
-            # Clean up client's TTS buffer
             if client_id in client_tts_buffers:
                 del client_tts_buffers[client_id]
             client_settings_manager.remove_client(client_id)

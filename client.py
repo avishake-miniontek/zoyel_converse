@@ -49,9 +49,6 @@ from src.audio_output import AudioOutput  # The updated file from above
 with open('config.json', 'r') as f:
     CONFIG = json.load(f)
 
-    # Don't convert indices to names - let each class handle device selection
-    # This prevents issues with name format mismatches between input/output handlers
-
 # Server configuration
 API_KEY = CONFIG['server']['websocket']['api_key']
 SERVER_HOST = CONFIG['server']['websocket']['host']
@@ -211,22 +208,22 @@ async def receive_transcripts(websocket, audio_interface):
             await asyncio.sleep(0.1)
             continue
 
-        # If it's bytes, check the frame type
+        # Process binary messages and text messages separately
         if isinstance(msg, bytes):
             try:
                 if len(msg) >= 9:  # Minimum frame size (4 magic + 1 type + 4 length)
                     magic = msg[:4]
                     frame_type = msg[4]
                     if magic == b'MIRA':
-                        if frame_type == 0x01:  # Audio data
-                            # Hand off to audio_output
-                            asyncio.create_task(audio_output.play_chunk(msg[9:]))
-                        elif frame_type == 0x02:  # End of utterance
-                            pass  # Handle end frame
-                        elif frame_type == 0x03:  # VAD status
+                        if frame_type == 0x03:
+                            # VAD status frame; process it directly (payload is at msg[9])
                             if audio_interface and audio_interface.has_gui:
                                 is_speech = bool(msg[9])
                                 audio_interface.process_vad(is_speech)
+                        else:
+                            # For audio data (0x01) and end-of-utterance (0x02) frames,
+                            # pass the full frame (header + payload) to the audio output.
+                            asyncio.create_task(audio_output.play_chunk(msg))
             except Exception as e:
                 print(f"[ERROR] Failed to process frame: {e}")
                 import traceback
@@ -238,7 +235,7 @@ async def receive_transcripts(websocket, audio_interface):
             print("[ERROR] Server TTS generation failed.")
             continue
 
-        # Check for the trigger word
+        # Check for the trigger word in text messages
         msg_lower = msg.lower()
         trigger_pos = msg_lower.find(TRIGGER_WORD.lower())
         if trigger_pos != -1:
@@ -480,8 +477,10 @@ def run_client():
             'on_output_change': lambda name: audio_output.set_device_by_name(name)
         }
         if use_gui:
+            from src.graphical_interface import AudioInterface as GraphicalInterface
             audio_interface = GraphicalInterface(**interface_params)
         else:
+            from src.headless_interface import HeadlessAudioInterface
             audio_interface = HeadlessAudioInterface(**interface_params)
             print("[CLIENT] Running in headless mode.")
 

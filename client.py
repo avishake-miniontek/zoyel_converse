@@ -9,16 +9,16 @@ TTS audio data from the server, which it plays via AudioOutput.
 Usage:
     python client.py [--no-gui]
 
-In addition to its normal operation, this version saves a local WAV file every
-10 seconds containing the post-processed audio being sent to the server. This
-helps you inspect the original client-side audio for debugging.
+Noise floor functionality has been removed entirely.
 """
 
+import sys
 import asyncio
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 import websockets
 import numpy as np
 import samplerate
-import sys
 import os
 import platform
 import uuid
@@ -30,7 +30,6 @@ import time
 import argparse
 import sounddevice as sd
 import datetime
-from scipy.io.wavfile import write as wav_write
 
 # Conditionally import GUI modules
 gui_available = True
@@ -43,7 +42,7 @@ except ImportError:
 from src.headless_interface import HeadlessAudioInterface
 from src.audio_core import AudioCore
 from src.llm_client import LLMClient
-from src.audio_output import AudioOutput  # The updated file from above
+from src.audio_output import AudioOutput  # Assumes this module is up-to-date
 
 # Load configuration
 with open('config.json', 'r') as f:
@@ -54,7 +53,7 @@ API_KEY = CONFIG['server']['websocket']['api_key']
 SERVER_HOST = CONFIG['server']['websocket']['host']
 SERVER_PORT = CONFIG['server']['websocket']['port']
 
-# Generate unique client ID
+# Generate unique client ID and build the server URI.
 CLIENT_ID = uuid.uuid4()
 SERVER_URI = f"ws://{SERVER_HOST}:{SERVER_PORT}?api_key={API_KEY}&client_id={CLIENT_ID}"
 
@@ -67,17 +66,12 @@ TRIGGER_WORD = CONFIG['assistant']['name']
 
 async def record_and_send_audio(websocket, audio_interface, audio_core):
     """
-    Continuously read audio from the microphone, send raw PCM frames to the server,
-    and (for debugging) save a WAV file locally every 10 seconds.
-    The audio is automatically resampled to 16kHz if needed.
+    Continuously read audio from the microphone and send raw PCM frames to the server.
+    Audio is resampled to 16kHz if needed.
     """
     error_count = 0
     max_errors = 3
 
-    # Buffer to accumulate audio for local saving
-    save_buffer = []  # Each element is a numpy array (int16)
-    last_save_time = time.time()
-    
     try:
         if not audio_core or not audio_core.stream:
             print("Error: Audio core not properly initialized")
@@ -98,48 +92,30 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
 
         while True:
             try:
-                # Read audio chunk from mic with error handling
+                # Read a chunk of audio from the microphone.
                 try:
-                    # Read returns tuple (data, overflowed)
-                    # data shape is (frames, channels) for multi-channel
+                    # stream.read returns a tuple (data, overflowed); data is (frames, channels)
                     audio_data = stream.read(audio_core.CHUNK)[0]
                 except Exception as e:
                     if isinstance(e, sd.PortAudioError) and "Invalid stream pointer" in str(e):
                         print(f"Fatal stream error: {e}")
-                        raise  # Trigger reconnection
+                        raise
                     print(f"Stream read error: {e}")
                     await asyncio.sleep(0.1)
                     continue
 
-                # Convert stereo to mono by averaging the channels
+                # Convert stereo to mono by averaging channels.
                 if len(audio_data.shape) == 2 and audio_data.shape[1] > 1:
                     audio_data = np.mean(audio_data, axis=1)
 
-                # Resample to 16kHz if needed
+                # Resample to 16kHz if needed.
                 if needs_resampling and resampler:
                     audio_data = resampler.process(audio_data, ratio, end_of_input=False)
 
-                # Scale to int16
+                # Scale to int16.
                 final_data = np.clip(audio_data * 32767.0, -32767, 32767).astype(np.int16)
                 
-                # Append to local save buffer (for debugging)
-                save_buffer.append(final_data.copy())
-
-                # Save a WAV file every 10 seconds
-                current_time = time.time()
-                if current_time - last_save_time >= 10:
-                    try:
-                        combined = np.concatenate(save_buffer)
-                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                        filename = f"client_record_{timestamp}.wav"
-                        wav_write(filename, 16000, combined)
-                        print(f"[DEBUG] Saved local recording to {filename}")
-                    except Exception as e:
-                        print(f"[DEBUG] Error saving WAV file: {e}")
-                    save_buffer = []
-                    last_save_time = current_time
-
-                # Send the audio to the server
+                # Send the audio chunk to the server.
                 try:
                     await websocket.send(final_data.tobytes())
                     error_count = 0
@@ -173,14 +149,13 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
         print(f"Error in record_and_send_audio: {e}")
         raise
     finally:
-        # Do not close the stream here; audio_core manages it.
+        # The audio stream is managed by audio_core; do not close here.
         pass
 
 async def receive_transcripts(websocket, audio_interface):
     """
     Continuously receive transcripts (text) and TTS frames (bytes) from the server.
-    If text is received, handle potential LLM triggers. If binary frames are received,
-    pass them to audio_output for playback.
+    Text messages are processed for LLM triggers, and binary frames are passed to audio_output for playback.
     """
     error_count = 0
     max_errors = 3
@@ -190,11 +165,11 @@ async def receive_transcripts(websocket, audio_interface):
     global audio_output
 
     async def handle_llm_chunk(text):
-        """When LLM yields text, send it to the server as a TTS request."""
+        """Send LLM-generated text to the server as a TTS request."""
         await websocket.send(f"TTS:{text}")
 
     async def process_text(text: str):
-        """Send text to the LLM for processing."""
+        """Process text input with the LLM."""
         try:
             if not text.lower().startswith(TRIGGER_WORD.lower()):
                 text = f"{TRIGGER_WORD}, {text}"
@@ -229,7 +204,7 @@ async def receive_transcripts(websocket, audio_interface):
 
         if isinstance(msg, bytes):
             try:
-                if len(msg) >= 9:
+                if len(msg) >= 9:  # Minimum frame size (4 magic + 1 type + 4 length)
                     magic = msg[:4]
                     frame_type = msg[4]
                     if magic == b'MIRA':
@@ -276,15 +251,16 @@ class AsyncThread(threading.Thread):
         self.daemon = True
 
     async def connect_to_server(self):
-        """Connect to the WebSocket server and perform basic auth."""
+        """Connect to the WebSocket server and wait for authentication."""
         try:
             self.websocket = await websockets.connect(SERVER_URI)
             print(f"Connected to {SERVER_URI}")
 
-            # Wait for auth confirmation from server
+            # Wait for server auth (which now does not depend on noise floor)
             auth_response = await asyncio.wait_for(self.websocket.recv(), timeout=2.0)
             if auth_response != "AUTH_OK":
                 raise Exception(f"Auth failed: {auth_response}")
+            print("[CLIENT] Server ready.")
             return True
         except Exception as e:
             print(f"[ERROR] connect_to_server: {e}")
@@ -294,8 +270,8 @@ class AsyncThread(threading.Thread):
 
     async def handle_server_connection(self):
         """
-        Attempt to connect and then start tasks.
-        (Note: Noise floor functionality has been removed.)
+        Attempt to connect and, once connected, start the tasks for sending and receiving audio.
+        (Noise floor functionality has been removed.)
         """
         retry_count = 0
         max_retries = CONFIG['client']['retry']['max_attempts']
@@ -309,8 +285,6 @@ class AsyncThread(threading.Thread):
                     print(f"Retry in {delay_seconds} seconds...")
                     await asyncio.sleep(delay_seconds)
                 continue
-
-            print("[CLIENT] Server ready.")
 
             self.tasks = [
                 asyncio.create_task(record_and_send_audio(self.websocket, self.audio_interface, self.audio_core)),
@@ -412,7 +386,7 @@ class AsyncThread(threading.Thread):
 def run_client():
     """
     Entrypoint for the client. Handles CLI args, selects GUI or headless mode,
-    spawns AsyncThread, and runs until termination.
+    spawns the AsyncThread, and runs until termination.
     """
     global audio_output
 

@@ -11,7 +11,6 @@ import struct
 from collections import deque
 from urllib.parse import urlparse, parse_qs
 import datetime
-from scipy.io.wavfile import write as wav_write
 
 ################################################################################
 # GPU SELECTION
@@ -606,14 +605,6 @@ async def transcribe_audio(websocket):
                                 print(f"[DEBUG] Detected utterance duration: {utterance_duration:.2f}s")
                                 if utterance_duration < 1.0:
                                     print("[WARNING] Utterance duration is very short; possible premature cutoff due to VAD settings.")
-                                
-                                # Save the utterance as a WAV file for debugging purposes.
-                                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                                wav_filename = f"utterance_{timestamp}.wav"
-                                # Convert float32 audio (-1.0 to 1.0) to int16 PCM
-                                audio_int16 = np.clip(audio * 32767.0, -32768, 32767).astype(np.int16)
-                                wav_write(wav_filename, 16000, audio_int16)
-                                print(f"[DEBUG] Saved utterance to {wav_filename}")
                                 
                                 try:
                                     # Ensure audio is in the correct format and shape

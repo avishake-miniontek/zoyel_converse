@@ -6,7 +6,10 @@ import platform
 import struct
 from scipy import signal
 import time
+import sys
 import asyncio
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 class AudioOutput:
     """

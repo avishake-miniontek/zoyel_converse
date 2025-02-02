@@ -6,7 +6,10 @@ Maintains conversation context with automatic timeout and manual reset capabilit
 
 import json
 import os
+import sys
 import asyncio
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 import time
 from openai import AsyncOpenAI
 from typing import Optional, List, Dict

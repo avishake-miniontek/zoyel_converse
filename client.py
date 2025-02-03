@@ -18,7 +18,7 @@ if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 import websockets
 import numpy as np
-import samplerate
+from scipy import signal
 import os
 import platform
 import uuid
@@ -83,18 +83,10 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
 
         print("\nStart speaking...")
 
-        # Create resampler if needed
-        if needs_resampling:
-            resampler = samplerate.Resampler('sinc_best')
-            ratio = 16000 / rate
-        else:
-            resampler = None
-
         while True:
             try:
-                # Read a chunk of audio from the microphone.
+                # Read a chunk of audio from the microphone
                 try:
-                    # stream.read returns a tuple (data, overflowed); data is (frames, channels)
                     audio_data = stream.read(audio_core.CHUNK)[0]
                 except Exception as e:
                     if isinstance(e, sd.PortAudioError) and "Invalid stream pointer" in str(e):
@@ -104,18 +96,19 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
                     await asyncio.sleep(0.1)
                     continue
 
-                # Convert stereo to mono by averaging channels.
+                # Convert stereo to mono by averaging channels
                 if len(audio_data.shape) == 2 and audio_data.shape[1] > 1:
                     audio_data = np.mean(audio_data, axis=1)
 
-                # Resample to 16kHz if needed.
-                if needs_resampling and resampler:
-                    audio_data = resampler.process(audio_data, ratio, end_of_input=False)
+                # Resample to 16kHz if needed using scipy.signal
+                if needs_resampling:
+                    num_samples = int(len(audio_data) * 16000 / rate)
+                    audio_data = signal.resample(audio_data, num_samples)
 
-                # Scale to int16.
+                # Scale to int16
                 final_data = np.clip(audio_data * 32767.0, -32767, 32767).astype(np.int16)
                 
-                # Send the audio chunk to the server.
+                # Send the audio chunk to the server
                 try:
                     await websocket.send(final_data.tobytes())
                     error_count = 0

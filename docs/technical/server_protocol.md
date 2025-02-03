@@ -71,7 +71,7 @@ The client may also send plain text commands (UTF‐8 strings) that control serv
   * The resulting audio is sent back as binary frames (see Section 4B)
 
 #### Other Control Commands:
-* `"VOICE_FILTER_ON"`: Tells the server to enable any voice filtering
+* `"VOICE_FILTER_ON"`: Tells the server to enable any voice filtering (Not yet implemented, future feature)
 * `"VOICE_FILTER_OFF"`: Tells the server to disable voice filtering
 * `"RESET"`: Instructs the server to reset its internal audio buffers
 * `"EXIT"`: Requests that the connection be closed

@@ -113,34 +113,29 @@ cp default_config.json config.json
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 ```
 
-3. Install required Python packages:
-```bash
-pip install numpy>=1.24.0 transformers>=4.30.0 scipy>=1.11.0 safetensors>=0.3.1 sounddevice>=0.4.6 soundfile>=0.12.1 accelerate>=1.3.0 munch>=4.0.0 phonemizer>=3.2.0 kokoro>=0.3.1 websockets>=11.0.3 silero-vad>=5.0.0
-```
-
-4. Clone the repository:
+3. Clone the repository:
 ```bash
 git clone https://github.com/KartDriver/mira_converse.git
 cd mira_converse
 ```
 
-5. Create and activate a virtual environment (recommended):
+4. Create and activate a virtual environment (recommended):
 ```bash
 python -m venv venv
 venv\Scripts\activate
 ```
 
-6. Install server dependencies:
+5. Install server dependencies:
 ```bash
-pip install -r server_requirements.txt
+pip install -r windows_server_requirements.txt
 ```
 
-7. Create your configuration file:
+6. Create your configuration file:
 ```bash
 copy default_config.json config.json
 ```
 
-8. Set up the required models:
+7. Set up the required models:
    - Download the Whisper speech-to-text model from [HuggingFace](https://huggingface.co/openai/whisper-large-v3-turbo)
    - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
    - Set the downloaded model paths in your config.json

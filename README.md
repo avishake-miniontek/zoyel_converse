@@ -113,29 +113,34 @@ cp default_config.json config.json
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 ```
 
-3. Clone the repository:
+3. Install required Python packages:
+```bash
+pip install numpy>=1.24.0 transformers>=4.30.0 scipy>=1.11.0 safetensors>=0.3.1 sounddevice>=0.4.6 soundfile>=0.12.1 accelerate>=1.3.0 munch>=4.0.0 phonemizer>=3.2.0 kokoro>=0.3.1 websockets>=11.0.3 silero-vad>=5.0.0
+```
+
+4. Clone the repository:
 ```bash
 git clone https://github.com/KartDriver/mira_converse.git
 cd mira_converse
 ```
 
-4. Create and activate a virtual environment (recommended):
+5. Create and activate a virtual environment (recommended):
 ```bash
 python -m venv venv
 venv\Scripts\activate
 ```
 
-5. Install server dependencies:
+6. Install server dependencies:
 ```bash
 pip install -r server_requirements.txt
 ```
 
-6. Create your configuration file:
+7. Create your configuration file:
 ```bash
 copy default_config.json config.json
 ```
 
-7. Set up the required models:
+8. Set up the required models:
    - Download the Whisper speech-to-text model from [HuggingFace](https://huggingface.co/openai/whisper-large-v3-turbo)
    - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
    - Set the downloaded model paths in your config.json
@@ -148,7 +153,7 @@ copy default_config.json config.json
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
 # Install required packages
-brew install python-tk (tk installs with tkinter for guit support)
+brew install python-tk
 # Optional: Install espeak-ng for better text-to-speech phonemization
 brew install espeak-ng
 ```
@@ -204,30 +209,12 @@ Note: The models are large files (several GB) and require sufficient disk space.
 
 ### Client Setup
 
-Optionally, you can set up a virtual environment to isolate the project dependencies. If you don't have the venv module installed, you can install it using your system's package manager:
-
-- On Ubuntu/Debian: `sudo apt-get install python3-venv`
-- On CentOS/RHEL: `sudo yum install python3-venv`
-- On Windows: The venv module is included with Python 3.x
-
 #### Linux Setup
-
-##### GUI Mode
-If you want to use the graphical interface:
 
 1. Install system dependencies:
 ```bash
 # Ubuntu/Debian
-# Optional: Install espeak-ng for better text-to-speech phonemization
-sudo apt-get install espeak-ng
-
-# Fedora
-# Optional: Install espeak-ng for better text-to-speech phonemization
-sudo dnf install espeak-ng
-
-# Arch Linux
-# Optional: Install espeak-ng for better text-to-speech phonemization
-sudo pacman -S espeak-ng
+sudo apt-get install python3-venv python3-tk
 ```
 
 2. Create your configuration file:
@@ -241,62 +228,24 @@ python3 -m venv venv
 source venv/bin/activate
 ```
 
-4. Install GUI dependencies:
+4. Install dependencies:
 ```bash
 pip install -r client_requirements.txt
 ```
 
-5. Run with GUI (default):
+5. Run the client:
 ```bash
 python client.py
-```
-
-##### Headless Mode (No GUI)
-If you only need command-line operation without a graphical interface:
-
-1. Install system dependencies:
-```bash
-# Ubuntu/Debian
-# Optional: Install espeak-ng for better text-to-speech phonemization
-sudo apt-get install espeak-ng
-
-# Fedora
-# Optional: Install espeak-ng for better text-to-speech phonemization
-sudo dnf install espeak-ng
-
-# Arch Linux
-# Optional: Install espeak-ng for better text-to-speech phonemization
-sudo pacman -S espeak-ng
-```
-
-2. Create your configuration file:
-```bash
-cp default_config.json config.json
-```
-
-3. (Optional) Create and activate a virtual environment:
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-4. Install headless dependencies:
-```bash
-pip install -r client_requirements_no_gui.txt
-```
-
-5. Run in headless mode:
-```bash
-python client.py --no-gui
 ```
 
 #### Windows Setup
 
-##### GUI Mode
-If you want to use the graphical interface:
+1. Install Python 3.8 or higher from [python.org](https://www.python.org/downloads/)
 
-1. Optional: Install espeak-ng for better text-to-speech phonemization:
-   - Download and install from [GitHub releases](https://github.com/espeak-ng/espeak-ng/releases)
+2. Install required Python packages:
+```bash
+pip install setuptools>=68.0.0 websockets>=11.0.3 numpy>=1.24.0 sounddevice>=0.4.6 openai>=1.3.0 scipy>=1.11.0 soundfile>=0.12.1 PyAudio>=0.2.13
+```
 
 3. Create your configuration file:
 ```bash
@@ -309,47 +258,17 @@ python -m venv venv
 venv\Scripts\activate
 ```
 
-5. Install GUI dependencies:
+5. Install dependencies:
 ```bash
 pip install -r client_requirements.txt
 ```
 
-6. Run with GUI (default):
+6. Run the client:
 ```bash
 python client.py
 ```
 
-##### Headless Mode (No GUI)
-If you only need command-line operation without a graphical interface:
-
-1. Optional: Install espeak-ng for better text-to-speech phonemization:
-   - Download and install from [GitHub releases](https://github.com/espeak-ng/espeak-ng/releases)
-
-3. Create your configuration file:
-```bash
-copy default_config.json config.json
-```
-
-4. (Optional) Create and activate a virtual environment:
-```bash
-python -m venv venv
-venv\Scripts\activate
-```
-
-5. Install headless dependencies:
-```bash
-pip install -r client_requirements_no_gui.txt
-```
-
-6. Run in headless mode:
-```bash
-python client.py --no-gui
-```
-
 #### macOS Setup
-
-##### GUI Mode
-If you want to use the graphical interface, you'll need additional dependencies:
 
 1. Install system dependencies:
 ```bash
@@ -358,8 +277,6 @@ If you want to use the graphical interface, you'll need additional dependencies:
 
 # Install required packages
 brew install python-tk
-# Optional: Install espeak-ng for better text-to-speech phonemization
-brew install espeak-ng
 ```
 
 2. Create your configuration file:
@@ -373,51 +290,15 @@ python3 -m venv venv
 source venv/bin/activate
 ```
 
-4. Install GUI dependencies:
+4. Install dependencies:
 ```bash
 pip install -r client_requirements.txt
 ```
 
-5. Run with GUI (default):
+5. Run the client:
 ```bash
 python client.py
 ```
-
-##### Headless Mode (No GUI)
-If you only need command-line operation without a graphical interface:
-
-1. Install system dependencies:
-```bash
-# Install Homebrew if you haven't already
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Install required packages
-# Optional: Install espeak-ng for better text-to-speech phonemization
-brew install espeak-ng
-```
-
-2. Create your configuration file:
-```bash
-cp default_config.json config.json
-```
-
-2. (Optional) Create and activate a virtual environment:
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-3. Install headless dependencies:
-```bash
-pip install -r client_requirements_no_gui.txt
-```
-
-4. Run in headless mode:
-```bash
-python client.py --no-gui
-```
-
-Note: The headless mode is particularly useful for server environments or when you don't need visual feedback. It uses fewer system resources and doesn't require the tkinter dependency.
 
 ## Configuration
 
@@ -433,7 +314,6 @@ cp default_config.json config.json
    - Configure server addresses and ports
    - Set API keys
    - Adjust audio processing parameters if needed
-
 
 Here's a detailed explanation of each configuration section:
 
@@ -518,7 +398,7 @@ Here's a detailed explanation of each configuration section:
 ```json
 "client": {
     "retry": {
-        "max_attempts": 3,       // Maximum number of connection retry attempts (both for initial connection and reconnection)
+        "max_attempts": 3,       // Maximum number of connection retry attempts
         "delay_seconds": 2       // Delay between retry attempts in seconds
     }
 }
@@ -535,17 +415,8 @@ python server.py
 
 2. Start the client:
 ```bash
-# With GUI (default):
 python client.py
-
-# Without GUI (headless mode):
-python client.py --no-gui
 ```
-
-The headless mode is particularly useful for:
-- Running on devices without display capabilities (e.g., Raspberry Pi)
-- Server environments where GUI is not needed
-- Minimizing resource usage
 
 3. The system will:
    - Initialize audio devices

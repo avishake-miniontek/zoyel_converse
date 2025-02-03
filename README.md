@@ -102,6 +102,11 @@ cp default_config.json config.json
    - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
    - Set the downloaded model paths in your config.json
 
+7. Run the server:
+```bash
+python server.py
+```
+
 #### Windows Server Setup
 
 1. Install system dependencies:
@@ -139,6 +144,11 @@ copy default_config.json config.json
    - Download the Whisper speech-to-text model from [HuggingFace](https://huggingface.co/openai/whisper-large-v3-turbo)
    - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
    - Set the downloaded model paths in your config.json
+
+8. Run the server:
+```bash
+python server.py
+```
 
 #### macOS Server Setup
 
@@ -179,6 +189,11 @@ cp default_config.json config.json
    - Download the Whisper speech-to-text model from [HuggingFace](https://huggingface.co/openai/whisper-large-v3-turbo)
    - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
    - Set the downloaded model paths in your config.json
+
+7. Run the server:
+```bash
+python server.py
+```
 
 Note: The models are large files (several GB) and require sufficient disk space. Make sure to use the correct paths where you downloaded the models in your config.json file. Here are examples for different operating systems:
 
@@ -383,8 +398,8 @@ Here's a detailed explanation of each configuration section:
     "min_speech_duration": 0.5,  // Minimum duration to consider as speech (seconds)
     "end_silence_duration": 0.8, // Maximum silence before closing capture (seconds)
     "vad_settings": {
-        "mode": 2,              // WebRTC VAD aggressiveness (0-3, 3 being most aggressive)
-        "frame_duration_ms": 20  // VAD frame duration in milliseconds
+        "threshold": 0.3,        // Silero VAD speech detection threshold (0.0-1.0)
+        "consecutive_threshold": 2  // Number of consecutive speech frames needed to trigger speech start
     }
 }
 ```

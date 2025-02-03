@@ -44,8 +44,8 @@
         "min_speech_duration": 0.5,
         "end_silence_duration": 1.1,
         "vad_settings": {
-            "mode": 2,
-            "frame_duration_ms": 20
+            "threshold": 0.3,
+            "consecutive_threshold": 2
         }
     },
     "client": {

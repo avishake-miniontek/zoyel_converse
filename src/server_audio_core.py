@@ -152,8 +152,10 @@ class ServerAudioCore:
                 tensor = torch.tensor([frame], dtype=torch.float32).to(self.device)
                 with torch.no_grad():
                     speech_prob = self.vad_model(tensor, 16000).item()
-                # Determine if the frame contains speech (threshold set for sensitivity)
-                frame_is_speech = speech_prob > 0.08
+                # Get speech threshold from config, default to 0.3 for backwards compatibility
+                speech_threshold = self.config['speech_detection']['vad_settings'].get('threshold', 0.3)
+                # Determine if the frame contains speech
+                frame_is_speech = speech_prob > speech_threshold
                 if frame_is_speech:
                     speech_frames_in_chunk += 1
                     self.speech_frames += 1

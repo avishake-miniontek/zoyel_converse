@@ -35,77 +35,44 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
 - Python 3.8 or higher
 - NVIDIA GPU with at least 4GB VRAM (required for running both Whisper and Kokoro models)
   - GPU acceleration is required for real-time performance
-  - CUDA toolkit must be installed for GPU support
 - Sufficient disk space for models (approximately 10GB total)
-- PortAudio library for audio processing
-  - Ubuntu/Debian: `sudo apt-get install libportaudio2 portaudio19-dev`
-  - Fedora: `sudo dnf install portaudio portaudio-devel`
-  - Arch Linux: `sudo pacman -S portaudio`
-  - macOS: `brew install portaudio`
-  - Windows: Download and install the [PortAudio binaries](http://www.portaudio.com/download.html)
+- espeak-ng (optional) for better text-to-speech phonemization
+  - Ubuntu/Debian: Usually pre-installed, if not: `sudo apt-get install espeak-ng`
+  - Fedora: `sudo dnf install espeak-ng`
+  - Arch Linux: `sudo pacman -S espeak-ng`
+  - macOS: `brew install espeak-ng`
+  - Windows: Download and install from [GitHub releases](https://github.com/espeak-ng/espeak-ng/releases)
 
 ### Client Requirements
 - Python 3.8 or higher
 - Audio input device (microphone)
 - Audio output device (speakers)
 - Basic CPU for audio processing
-- tkinter/tk>=8.6 (only for GUI mode)
-  - Linux/macOS: Usually included with Python
-  - Windows: Included with Python installer (ensure to check "tcl/tk and IDLE" during installation)
-- CMake for building audio processing dependencies
-  - Ubuntu/Debian: `sudo apt-get install cmake`
-  - Fedora: `sudo dnf install cmake`
-  - Arch Linux: `sudo pacman -S cmake`
-  - macOS: `brew install cmake`
-  - Windows: Download installer from https://cmake.org/download/
-
-- espeak-ng for text-to-speech phonemization
-  - While Kokoro documentation states this is optional, Windows users have reported it being required for the system to work
-  - Ubuntu/Debian: Usually pre-installed, if not: `sudo apt-get install espeak-ng`
-  - Fedora: `sudo dnf install espeak-ng`
-  - Arch Linux: `sudo pacman -S espeak-ng`
-  - macOS: `brew install espeak-ng`
-  - Windows: Download and install espeak-ng from [GitHub releases](https://github.com/espeak-ng/espeak-ng/releases)
-  - After installation on Windows, set these environment variables before importing phonemizer (Any Windows users, please report back if this is required, and I will add code to detect Windows OS and check the path and try to include it):
-    ```python
-    import os
-    os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = r"C:\Program Files\eSpeak NG\libespeak-ng.dll"
-    os.environ["PHONEMIZER_ESPEAK_PATH"] = r"C:\Program Files\eSpeak NG\espeak-ng.exe"
-    ```
 
 ## Installation
 
 ### Server Setup
 
-Optionally, you can set up a virtual environment to isolate the project dependencies:
+The server component requires Python 3.8 or higher and an NVIDIA GPU with at least 4GB VRAM for real-time performance. Choose your operating system below for specific setup instructions.
 
-```bash
-# Linux/macOS
-python3 -m venv venv
-source venv/bin/activate
-
-# Windows
-python -m venv venv
-venv\Scripts\activate
-```
+#### Linux Server Setup
 
 1. Install system dependencies:
 ```bash
 # Ubuntu/Debian
-sudo apt-get install libportaudio2 portaudio19-dev
+sudo apt-get install python3-venv
+# Optional: Install espeak-ng for better text-to-speech phonemization
+sudo apt-get install espeak-ng
 
 # Fedora
-sudo dnf install portaudio portaudio-devel
+sudo dnf install python3-venv
+# Optional: Install espeak-ng for better text-to-speech phonemization
+sudo dnf install espeak-ng
 
 # Arch Linux
-sudo pacman -S portaudio
-
-# macOS
-brew install portaudio
-
-# Windows
-# Download and install PortAudio binaries from http://www.portaudio.com/download.html
-# Ensure the DLL is in your system PATH
+sudo pacman -S python
+# Optional: Install espeak-ng for better text-to-speech phonemization
+sudo pacman -S espeak-ng
 ```
 
 2. Clone the repository:
@@ -114,27 +81,106 @@ git clone https://github.com/KartDriver/mira_converse.git
 cd mira_converse
 ```
 
-2. Install server dependencies:
+3. Create and activate a virtual environment (recommended):
 ```bash
-# Linux/macOS/Windows
+python3 -m venv venv
+source venv/bin/activate
+```
+
+4. Install server dependencies:
+```bash
 pip install -r server_requirements.txt
 ```
 
-3. Create your configuration file:
+5. Create your configuration file:
 ```bash
-# Linux/macOS
 cp default_config.json config.json
-
-# Windows (Command Prompt)
-copy default_config.json config.json
 ```
 
-4. Set up the required models:
+6. Set up the required models:
    - Download the Whisper speech-to-text model from [HuggingFace](https://huggingface.co/openai/whisper-large-v3-turbo)
    - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
    - Set the downloaded model paths in your config.json
 
-Note: The models are large files (several GB) and require sufficient disk space. Make sure to use the correct paths where you downloaded the models in your config.json file:
+#### Windows Server Setup
+
+1. Install system dependencies:
+   - Install Python 3.8 or higher from [python.org](https://www.python.org/downloads/)
+   - Optional: Install espeak-ng from [GitHub releases](https://github.com/espeak-ng/espeak-ng/releases) for better text-to-speech phonemization
+
+2. Install PyTorch with CUDA support:
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+```
+
+3. Clone the repository:
+```bash
+git clone https://github.com/KartDriver/mira_converse.git
+cd mira_converse
+```
+
+4. Create and activate a virtual environment (recommended):
+```bash
+python -m venv venv
+venv\Scripts\activate
+```
+
+5. Install server dependencies:
+```bash
+pip install -r server_requirements.txt
+```
+
+6. Create your configuration file:
+```bash
+copy default_config.json config.json
+```
+
+7. Set up the required models:
+   - Download the Whisper speech-to-text model from [HuggingFace](https://huggingface.co/openai/whisper-large-v3-turbo)
+   - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
+   - Set the downloaded model paths in your config.json
+
+#### macOS Server Setup
+
+1. Install system dependencies:
+```bash
+# Install Homebrew if you haven't already
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install required packages
+brew install python-tk (tk installs with tkinter for guit support)
+# Optional: Install espeak-ng for better text-to-speech phonemization
+brew install espeak-ng
+```
+
+2. Clone the repository:
+```bash
+git clone https://github.com/KartDriver/mira_converse.git
+cd mira_converse
+```
+
+3. Create and activate a virtual environment (recommended):
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+4. Install server dependencies:
+```bash
+pip install -r server_requirements.txt
+```
+
+5. Create your configuration file:
+```bash
+cp default_config.json config.json
+```
+
+6. Set up the required models:
+   - Download the Whisper speech-to-text model from [HuggingFace](https://huggingface.co/openai/whisper-large-v3-turbo)
+   - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
+   - Set the downloaded model paths in your config.json
+
+Note: The models are large files (several GB) and require sufficient disk space. Make sure to use the correct paths where you downloaded the models in your config.json file. Here are examples for different operating systems:
 
 ```json
 "models": {
@@ -172,16 +218,16 @@ If you want to use the graphical interface:
 1. Install system dependencies:
 ```bash
 # Ubuntu/Debian
-sudo apt-get install cmake
+# Optional: Install espeak-ng for better text-to-speech phonemization
+sudo apt-get install espeak-ng
 
 # Fedora
-sudo dnf install cmake
+# Optional: Install espeak-ng for better text-to-speech phonemization
+sudo dnf install espeak-ng
 
 # Arch Linux
-sudo pacman -S cmake
-
-# macOS
-brew install cmake
+# Optional: Install espeak-ng for better text-to-speech phonemization
+sudo pacman -S espeak-ng
 ```
 
 2. Create your configuration file:
@@ -211,16 +257,16 @@ If you only need command-line operation without a graphical interface:
 1. Install system dependencies:
 ```bash
 # Ubuntu/Debian
-sudo apt-get install cmake
+# Optional: Install espeak-ng for better text-to-speech phonemization
+sudo apt-get install espeak-ng
 
 # Fedora
-sudo dnf install cmake
+# Optional: Install espeak-ng for better text-to-speech phonemization
+sudo dnf install espeak-ng
 
 # Arch Linux
-sudo pacman -S cmake
-
-# macOS
-brew install cmake
+# Optional: Install espeak-ng for better text-to-speech phonemization
+sudo pacman -S espeak-ng
 ```
 
 2. Create your configuration file:
@@ -249,27 +295,26 @@ python client.py --no-gui
 ##### GUI Mode
 If you want to use the graphical interface:
 
-1. Install CMake:
-   - Download and install CMake from the official website: https://cmake.org/download/
-   - Make sure to add CMake to the system PATH during installation
+1. Optional: Install espeak-ng for better text-to-speech phonemization:
+   - Download and install from [GitHub releases](https://github.com/espeak-ng/espeak-ng/releases)
 
-2. Create your configuration file:
+3. Create your configuration file:
 ```bash
 copy default_config.json config.json
 ```
 
-3. (Optional) Create and activate a virtual environment:
+4. (Optional) Create and activate a virtual environment:
 ```bash
 python -m venv venv
 venv\Scripts\activate
 ```
 
-4. Install GUI dependencies:
+5. Install GUI dependencies:
 ```bash
 pip install -r client_requirements.txt
 ```
 
-5. Run with GUI (default):
+6. Run with GUI (default):
 ```bash
 python client.py
 ```
@@ -277,27 +322,26 @@ python client.py
 ##### Headless Mode (No GUI)
 If you only need command-line operation without a graphical interface:
 
-1. Install CMake:
-   - Download and install CMake from the official website: https://cmake.org/download/
-   - Make sure to add CMake to the system PATH during installation
+1. Optional: Install espeak-ng for better text-to-speech phonemization:
+   - Download and install from [GitHub releases](https://github.com/espeak-ng/espeak-ng/releases)
 
-2. Create your configuration file:
+3. Create your configuration file:
 ```bash
 copy default_config.json config.json
 ```
 
-3. (Optional) Create and activate a virtual environment:
+4. (Optional) Create and activate a virtual environment:
 ```bash
 python -m venv venv
 venv\Scripts\activate
 ```
 
-4. Install headless dependencies:
+5. Install headless dependencies:
 ```bash
 pip install -r client_requirements_no_gui.txt
 ```
 
-5. Run in headless mode:
+6. Run in headless mode:
 ```bash
 python client.py --no-gui
 ```
@@ -313,7 +357,9 @@ If you want to use the graphical interface, you'll need additional dependencies:
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
 # Install required packages
-brew install cmake python-tk
+brew install python-tk
+# Optional: Install espeak-ng for better text-to-speech phonemization
+brew install espeak-ng
 ```
 
 2. Create your configuration file:
@@ -346,7 +392,8 @@ If you only need command-line operation without a graphical interface:
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
 # Install required packages
-brew install cmake
+# Optional: Install espeak-ng for better text-to-speech phonemization
+brew install espeak-ng
 ```
 
 2. Create your configuration file:
@@ -419,7 +466,7 @@ Here's a detailed explanation of each configuration section:
             "path": "/home/user/models/Kokoro-82M",
             // Windows path examples (use either format):
             // "path": "C:/Users/user/models/Kokoro-82M"
-            // "path": "C:\\Users\\user\\models\\Kokoro-82M"
+            // "path": "C:\\Users\\user\\models\\Kokoro-82M",
             "voice_name": "af"          // Voice pack to use
         }
     }

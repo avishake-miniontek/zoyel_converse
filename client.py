@@ -16,7 +16,6 @@ if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 import websockets
 import numpy as np
-import samplerate
 import os
 import platform
 import uuid
@@ -191,13 +190,6 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
 
         print("\nStart speaking...")
 
-        # Create resampler if needed
-        if needs_resampling:
-            resampler = samplerate.Resampler('sinc_best')
-            ratio = 16000 / rate
-        else:
-            resampler = None
-
         loop = asyncio.get_running_loop()
 
         while True:
@@ -218,9 +210,10 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
                 if len(audio_data.shape) == 2 and audio_data.shape[1] > 1:
                     audio_data = np.mean(audio_data, axis=1)
 
-                # Resample to 16kHz if needed.
-                if needs_resampling and resampler:
-                    audio_data = resampler.process(audio_data, ratio, end_of_input=False)
+                # Resample to 16kHz if needed using scipy
+                if needs_resampling:
+                    from src import audio_utils
+                    audio_data = audio_utils.resample_audio(audio_data, rate, 16000)
 
                 # Scale to int16.
                 final_data = np.clip(audio_data * 32767.0, -32767, 32767).astype(np.int16)

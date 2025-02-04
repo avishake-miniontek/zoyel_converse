@@ -206,6 +206,11 @@ class AudioCore:
             dict: Contains processed audio data and level information
         """
         audio_data = audio_utils.convert_to_mono(audio_data)
+        
+        # Resample if needed using scipy
+        if self.needs_resampling and len(audio_data) > 0:
+            audio_data = audio_utils.resample_audio(audio_data, self.rate, self.DESIRED_RATE)
+            
         instant_rms_db, instant_peak_db = audio_utils.calculate_audio_levels(audio_data)
         
         now = time.time()

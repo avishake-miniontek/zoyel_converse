@@ -3,18 +3,38 @@ Shared audio processing utilities used by both client and server audio cores.
 """
 
 import numpy as np
+from scipy import signal
 
-def bytes_to_float32_audio(audio_bytes, sample_rate=16000):
+def resample_audio(audio_data, orig_rate, target_rate):
+    """
+    Resample audio data to target sample rate using scipy.
+    
+    Args:
+        audio_data: numpy array of audio samples
+        orig_rate: original sample rate
+        target_rate: desired sample rate
+        
+    Returns:
+        numpy array of resampled audio data
+    """
+    if orig_rate == target_rate:
+        return audio_data
+        
+    # Calculate number of samples for target rate
+    num_samples = int(len(audio_data) * target_rate / orig_rate)
+    return signal.resample(audio_data, num_samples)
+
+def bytes_to_float32_audio(audio_bytes, target_rate=16000):
     """
     Convert int16-encoded bytes to float32 samples in [-1..1] range.
     Used for converting audio data between client and server.
     
     Args:
         audio_bytes: Raw audio bytes in int16 format
-        sample_rate: Sample rate of the audio (default: 16000)
+        target_rate: Target sample rate for the audio (default: 16000)
         
     Returns:
-        tuple: (float32 numpy array, sample rate)
+        tuple: (float32 numpy array, target_rate)
     """
     # Convert to int16
     audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
@@ -25,7 +45,7 @@ def bytes_to_float32_audio(audio_bytes, sample_rate=16000):
     # Remove DC offset
     audio_float32 = audio_float32 - np.mean(audio_float32)
     
-    return audio_float32, sample_rate
+    return audio_float32, target_rate
 
 def convert_to_mono(audio_data):
     """

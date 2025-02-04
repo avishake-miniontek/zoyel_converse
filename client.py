@@ -30,6 +30,11 @@ import time
 import argparse
 import sounddevice as sd
 import datetime
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Conditionally import GUI modules
 gui_available = True
@@ -86,9 +91,7 @@ class MessageHandler:
             await self.audio_output.start_stream()
             await self.llm_client.process_trigger(text, callback=self.handle_llm_chunk)
         except Exception as e:
-            print(f"[ERROR] Failed to process text input: {e}")
-            import traceback
-            print(traceback.format_exc())
+            logger.error("Failed to process text input: %s", e, exc_info=True)
 
 async def websocket_receiver(websocket, handler):
     """Dedicated task for receiving from WebSocket and distributing messages"""
@@ -107,14 +110,14 @@ async def websocket_receiver(websocket, handler):
                 await handler.text_queue.put(msg)
                 
         except websockets.ConnectionClosed:
-            print("WebSocket connection closed")
+            logger.info("WebSocket connection closed")
             raise
         except Exception as e:
             error_count += 1
             if error_count >= max_errors:
-                print("\nToo many consecutive errors in receiver, reconnecting...")
+                logger.error("Too many consecutive errors in receiver, reconnecting...")
                 raise
-            print(f"Error in receiver: {e}")
+            logger.warning("Error in receiver: %s", e)
             await asyncio.sleep(0.1)
 
 async def process_audio_messages(handler):
@@ -133,7 +136,7 @@ async def process_audio_messages(handler):
                     else:
                         await handler.audio_output.play_chunk(msg)
         except Exception as e:
-            print(f"[ERROR] Failed to process audio frame: {e}")
+            logger.error("Failed to process audio frame: %s", e)
             await asyncio.sleep(0.001)
 
 async def process_text_messages(handler):
@@ -143,7 +146,7 @@ async def process_text_messages(handler):
             msg = await handler.text_queue.get()
             
             if msg == "TTS_ERROR":
-                print("[ERROR] Server TTS generation failed.")
+                logger.error("Server TTS generation failed.")
                 continue
 
             msg_lower = msg.lower()
@@ -155,20 +158,20 @@ async def process_text_messages(handler):
                 asyncio.create_task(handler.process_text(trigger_text))
                 
         except Exception as e:
-            print(f"[ERROR] Failed to process text message: {e}")
+            logger.error("Failed to process text message: %s", e)
             await asyncio.sleep(0.001)
 
 async def check_gui_input(handler):
-    """Check for GUI text input"""
+    """Fallback: Check for GUI text input (used only in headless mode)"""
     while True:
         try:
-            if handler.audio_interface and handler.audio_interface.has_gui:
+            if handler.audio_interface and not handler.audio_interface.has_gui:
                 text_input = handler.audio_interface.get_text_input()
                 if text_input is not None:
                     asyncio.create_task(handler.process_text(text_input))
             await asyncio.sleep(0.1)
         except Exception as e:
-            print(f"[ERROR] Failed to check GUI input: {e}")
+            logger.error("Failed to check GUI input: %s", e)
             await asyncio.sleep(0.1)
 
 async def record_and_send_audio(websocket, audio_interface, audio_core):
@@ -181,7 +184,7 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
 
     try:
         if not audio_core or not audio_core.stream:
-            print("Error: Audio core not properly initialized")
+            logger.error("Error: Audio core not properly initialized")
             return
 
         stream = audio_core.stream
@@ -197,16 +200,19 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
         else:
             resampler = None
 
+        loop = asyncio.get_running_loop()
+
         while True:
             try:
-                # Read a chunk of audio from the microphone.
+                # Read a chunk of audio from the microphone using an executor to avoid blocking.
                 try:
-                    audio_data = stream.read(audio_core.CHUNK)[0]
+                    result = await loop.run_in_executor(None, stream.read, audio_core.CHUNK)
+                    audio_data = result[0]
                 except Exception as e:
                     if isinstance(e, sd.PortAudioError) and "Invalid stream pointer" in str(e):
-                        print(f"Fatal stream error: {e}")
+                        logger.error("Fatal stream error: %s", e)
                         raise
-                    print(f"Stream read error: {e}")
+                    logger.warning("Stream read error: %s", e)
                     await asyncio.sleep(0.1)
                     continue
 
@@ -230,9 +236,9 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
                 except Exception as e:
                     error_count += 1
                     if error_count >= max_errors:
-                        print("\nToo many consecutive errors, triggering reconnection...")
+                        logger.error("Too many consecutive errors, triggering reconnection...")
                         raise
-                    print(f"Error sending audio chunk (attempt {error_count}/{max_errors}): {e}")
+                    logger.warning("Error sending audio chunk (attempt %d/%d): %s", error_count, max_errors, e)
                     await asyncio.sleep(0.1)
                     continue
 
@@ -241,18 +247,18 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
             except Exception as e:
                 error_count += 1
                 if error_count >= max_errors:
-                    print("\nToo many consecutive errors, triggering reconnection...")
+                    logger.error("Too many consecutive errors, triggering reconnection...")
                     raise
-                print(f"Error processing audio chunk: {e}")
+                logger.warning("Error processing audio chunk: %s", e)
                 await asyncio.sleep(0.1)
                 continue
 
             await asyncio.sleep(0.001)
 
     except asyncio.CancelledError:
-        print("Audio recording cancelled.")
+        logger.info("Audio recording cancelled.")
     except Exception as e:
-        print(f"Error in record_and_send_audio: {e}")
+        logger.error("Error in record_and_send_audio: %s", e)
         raise
     finally:
         # The audio stream is managed by audio_core; do not close here.
@@ -271,22 +277,23 @@ class AsyncThread(threading.Thread):
         self.websocket = None
         self.tasks = []
         self.running = True
+        self.handler = None  # Will hold the MessageHandler instance
         self.daemon = True
 
     async def connect_to_server(self):
         """Connect to the WebSocket server and wait for authentication."""
         try:
             self.websocket = await websockets.connect(SERVER_URI)
-            print(f"Connected to {SERVER_URI}")
+            logger.info(f"Connected to {SERVER_URI}")
 
             # Wait for server auth
             auth_response = await asyncio.wait_for(self.websocket.recv(), timeout=2.0)
             if auth_response != "AUTH_OK":
                 raise Exception(f"Auth failed: {auth_response}")
-            print("[CLIENT] Server ready.")
+            logger.info("[CLIENT] Server ready.")
             return True
         except Exception as e:
-            print(f"[ERROR] connect_to_server: {e}")
+            logger.error("connect_to_server: %s", e)
             if self.websocket:
                 await self.websocket.close()
             return False
@@ -300,38 +307,62 @@ class AsyncThread(threading.Thread):
         delay_seconds = CONFIG['client']['retry']['delay_seconds']
 
         while retry_count < max_retries and self.running:
-            print(f"\nAttempting to connect... (attempt {retry_count+1}/{max_retries})")
+            logger.info(f"\nAttempting to connect... (attempt {retry_count+1}/{max_retries})")
             if not await self.connect_to_server():
                 retry_count += 1
                 if retry_count < max_retries:
-                    print(f"Retry in {delay_seconds} seconds...")
+                    logger.info(f"Retry in {delay_seconds} seconds...")
                     await asyncio.sleep(delay_seconds)
                 continue
 
             # Initialize message handler
             handler = MessageHandler(audio_output, self.audio_interface, LLMClient())
+            self.handler = handler  # Store for GUI callbacks
 
-            # Create tasks
-            self.tasks = [
+            tasks = [
                 asyncio.create_task(record_and_send_audio(self.websocket, self.audio_interface, self.audio_core)),
                 asyncio.create_task(websocket_receiver(self.websocket, handler)),
                 asyncio.create_task(process_audio_messages(handler)),
-                asyncio.create_task(process_text_messages(handler)),
-                asyncio.create_task(check_gui_input(handler))
+                asyncio.create_task(process_text_messages(handler))
             ]
 
-            done, pending = await asyncio.wait(self.tasks, return_when=asyncio.FIRST_COMPLETED)
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+            # In headless mode, add the polling for GUI input; in GUI mode, use callback
+            if not self.audio_interface.has_gui:
+                tasks.append(asyncio.create_task(check_gui_input(handler)))
+            else:
+                # Register the GUI callback to process text input
+                def gui_text_callback(text):
+                    if self.loop is not None and self.handler is not None:
+                        asyncio.run_coroutine_threadsafe(self.handler.process_text(text), self.loop)
+                    else:
+                        logger.warning("GUI text callback invoked but async loop or handler not ready.")
+                try:
+                    self.audio_interface.set_text_callback(gui_text_callback)
+                except AttributeError:
+                    # Fallback if the GUI interface doesn't have set_text_callback
+                    self.audio_interface.on_input_change = gui_text_callback
+
+            self.tasks = tasks
+
+            try:
+                # Use asyncio.gather to run tasks concurrently
+                await asyncio.gather(*self.tasks)
+            except Exception as e:
+                logger.error("[CLIENT] One of the tasks raised an exception: %s", e)
+            finally:
+                # Cancel all tasks
+                for task in self.tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self.tasks, return_exceptions=True)
 
             if not self.running:
                 return
 
-            print("[CLIENT] Connection lost, will retry...")
+            logger.info("[CLIENT] Connection lost, will retry...")
             retry_count += 1
             if retry_count < max_retries:
-                print(f"Retrying in {delay_seconds} seconds...")
+                logger.info(f"Retrying in {delay_seconds} seconds...")
                 await asyncio.sleep(delay_seconds)
 
     async def initialize_audio(self):
@@ -340,16 +371,16 @@ class AsyncThread(threading.Thread):
             await audio_output.initialize()
             stream, device_info, rate, needs_resampling = self.audio_core.init_audio_device()
             if None in (stream, device_info, rate, needs_resampling):
-                print("[CLIENT] Error initializing microphone.")
+                logger.error("[CLIENT] Error initializing microphone.")
                 return False
 
             if self.audio_interface and self.audio_interface.has_gui:
                 self.audio_interface.input_device_queue.put(device_info['name'])
 
-            print(f"[CLIENT] Audio initialized. Device: {device_info['name']}")
+            logger.info(f"[CLIENT] Audio initialized. Device: {device_info['name']}")
             return True
         except Exception as e:
-            print(f"[CLIENT] Audio init error: {e}")
+            logger.error("[CLIENT] Audio init error: %s", e)
             return False
 
     async def async_main(self):
@@ -359,7 +390,7 @@ class AsyncThread(threading.Thread):
                 return
             await self.handle_server_connection()
         except Exception as e:
-            print(f"[CLIENT] Error in async main: {e}")
+            logger.error("[CLIENT] Error in async main: %s", e)
         finally:
             await self.cleanup()
 
@@ -380,7 +411,7 @@ class AsyncThread(threading.Thread):
                 except asyncio.CancelledError:
                     pass
         except Exception as e:
-            print(f"[CLIENT] Error during cleanup: {e}")
+            logger.error("[CLIENT] Error during cleanup: %s", e)
 
     def stop(self):
         """Stop everything gracefully."""
@@ -392,7 +423,7 @@ class AsyncThread(threading.Thread):
             try:
                 future.result(timeout=5)
             except Exception as e:
-                print(f"[CLIENT] Error stopping: {e}")
+                logger.error("[CLIENT] Error stopping: %s", e)
 
     def run(self):
         """Thread run: create an event loop and run async_main."""
@@ -401,9 +432,9 @@ class AsyncThread(threading.Thread):
             asyncio.set_event_loop(self.loop)
             self.loop.run_until_complete(self.async_main())
         except asyncio.CancelledError:
-            print("[CLIENT] Async ops cancelled.")
+            logger.info("[CLIENT] Async ops cancelled.")
         except Exception as e:
-            print(f"[CLIENT] Exception in async thread: {e}")
+            logger.error("[CLIENT] Exception in async thread: %s", e)
         finally:
             pending = asyncio.all_tasks(self.loop)
             for task in pending:
@@ -458,13 +489,12 @@ def run_client():
 
         if use_gui:
             def on_window_close():
-                print("[CLIENT] Window close -> stopping.")
+                logger.info("[CLIENT] Window close -> stopping.")
                 if async_thread:
                     async_thread.stop()
                 if audio_core:
                     audio_core.close()
                 audio_interface.close()
-
             audio_interface.root.protocol("WM_DELETE_WINDOW", on_window_close)
             audio_interface.root.mainloop()
         else:
@@ -482,7 +512,7 @@ def run_client():
         if audio_output:
             asyncio.run(audio_output.close())
     except Exception as e:
-        print(f"[CLIENT] Error: {e}")
+        logger.error("[CLIENT] Error: %s", e, exc_info=True)
         if "--no-gui" in sys.argv:
             import traceback
             print("\nTraceback:")

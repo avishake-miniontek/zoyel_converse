@@ -10,21 +10,22 @@ import sounddevice as sd
 import platform
 import warnings
 from src import audio_utils
+import logging
+
+logger = logging.getLogger(__name__)
 
 class AudioCore:
     def __init__(self):
         with open('config.json', 'r') as f:
             self.config = json.load(f)
 
-        # Basic audio properties
         self.stream = None
         self.rate = None
         self.needs_resampling = None
         self.CHUNK = self.config['audio_processing']['chunk_size']
-        self.CHANNELS = None  # Will be set based on device
+        self.CHANNELS = None
         self.DESIRED_RATE = self.config['audio_processing']['desired_rate']
 
-        # Audio level tracking for GUI
         self._noise_floor = -96.0
         self._min_floor   = -96.0
         self._max_floor   = -36.0
@@ -32,12 +33,8 @@ class AudioCore:
         self._peak_level  = -96.0
         self.last_update  = time.time()
 
-        # This "calibration" is mostly for display logs
         self.calibrated_floor = None
 
-    # ----------------------------------------------------------------
-    # Audio level properties for GUI meter
-    # ----------------------------------------------------------------
     @property
     def noise_floor(self):
         return self._noise_floor
@@ -84,9 +81,6 @@ class AudioCore:
     def peak_level(self, value):
         self._peak_level = float(value)
 
-    # ----------------------------------------------------------------
-    # Audio Device Initialization & Calibration
-    # ----------------------------------------------------------------
     def init_audio_device(self):
         """
         Initialize audio device and perform a short calibration for GUI floor display.
@@ -97,28 +91,23 @@ class AudioCore:
                 warnings.filterwarnings("ignore", category=RuntimeWarning, module="sounddevice")
 
             devices = sd.query_devices()
-            print("\nListing audio devices:")
+            logger.info("\nListing audio devices:")
             for i, dev in enumerate(devices):
                 if dev['max_input_channels'] > 0:
-                    print(f"   {i} {dev['name']}, ALSA ({dev['max_input_channels']} in, {dev['max_output_channels']} out)")
+                    logger.info(f"   {i} {dev['name']}, ALSA ({dev['max_input_channels']} in, {dev['max_output_channels']} out)")
             working_device = None
             device_info = None
 
-            # Check if audio_devices is present in config
             if 'audio_devices' in self.config and 'input_device' in self.config['audio_devices']:
                 input_device = self.config['audio_devices']['input_device']
-                # Handle numeric index directly - don't try to match by name
-                # since client.py no longer converts indices to names
                 if isinstance(input_device, (int, float)):
                     device_idx = int(input_device)
                     if 0 <= device_idx < len(devices):
                         device_info = devices[device_idx]
                         working_device = device_idx
             else:
-                # Use existing auto device selection logic
                 for i, device in enumerate(devices):
                     if device['max_input_channels'] > 0:
-                        # Example: prefer a name with 'microphone' on macOS
                         if system == 'darwin' and 'microphone' in device['name'].lower():
                             working_device = i
                             device_info = device
@@ -128,13 +117,12 @@ class AudioCore:
                             device_info = device
                             break
 
-            # fallback to default if none matched
             if working_device is None:
-                default_idx = sd.default.device[0]  # Get default input device index
+                default_idx = sd.default.device[0]
                 if default_idx is not None:
                     device_info = sd.query_devices(default_idx)
                     working_device = default_idx
-                    print(f"\nUsing default input device: {device_info['name']}")
+                    logger.info(f"\nUsing default input device: {device_info['name']}")
 
             if working_device is None or device_info is None:
                 raise RuntimeError("No suitable input device found.")
@@ -142,23 +130,21 @@ class AudioCore:
             rate = int(device_info['default_samplerate'])
             needs_resampling = (rate != self.DESIRED_RATE)
 
-            print("\nSelected device details:")
-            print(f"  Name: {device_info['name']}")
-            print(f"  Input channels: {device_info['max_input_channels']}")
-            print(f"  Default samplerate: {rate}")
-            print(f"  Latency: {device_info['default_low_input_latency']}")
+            logger.info("\nSelected device details:")
+            logger.info(f"  Name: {device_info['name']}")
+            logger.info(f"  Input channels: {device_info['max_input_channels']}")
+            logger.info(f"  Default samplerate: {rate}")
+            logger.info(f"  Latency: {device_info['default_low_input_latency']}")
 
             sd.default.device = (working_device, None)
 
-            # Short calibration for GUI floor display
-            calibration_duration = 0.5  # 500ms is enough for floor detection
+            calibration_duration = 0.5
             frames_needed = int(rate * calibration_duration)
-            print(f"\nCalibrating GUI floor for {calibration_duration}s...")
-            # Use a smaller chunk size for calibration on resource-constrained devices
+            logger.info(f"\nCalibrating GUI floor for {calibration_duration}s...")
             audio_buffer = sd.rec(frames_needed, samplerate=rate,
                                 channels=1, dtype='float32',
-                                blocksize=1024)  # Smaller blocksize for better responsiveness
-            sd.wait()  # This will be faster now due to shorter duration
+                                blocksize=1024)
+            sd.wait()
             audio_buffer = audio_buffer.flatten()
 
             chunk_rms_list = []
@@ -172,7 +158,6 @@ class AudioCore:
 
             if chunk_rms_list:
                 initial_floor = float(np.percentile(chunk_rms_list, 20))
-                # clamp
                 if initial_floor < -85.0:
                     initial_floor = -85.0
                 if initial_floor > -20.0:
@@ -186,17 +171,15 @@ class AudioCore:
             else:
                 self.calibrated_floor = -60.0
 
-            print(f"  GUI floor set to: {self.calibrated_floor:.1f} dB")
+            logger.info(f"  GUI floor set to: {self.calibrated_floor:.1f} dB")
 
-            # Get the number of input channels from the device
             self.CHANNELS = device_info['max_input_channels']
-            print(f"  Number of channels: {self.CHANNELS}")
+            logger.info(f"  Number of channels: {self.CHANNELS}")
 
-            # Open the main stream for continuous capture
-            print("\nOpening main input stream...")
+            logger.info("\nOpening main input stream...")
             stream = sd.InputStream(
                 device=working_device,
-                channels=self.CHANNELS,  # Use actual channel count
+                channels=self.CHANNELS,
                 samplerate=rate,
                 dtype=np.float32,
                 blocksize=self.CHUNK
@@ -212,9 +195,6 @@ class AudioCore:
         except Exception as e:
             raise RuntimeError(f"Failed to initialize audio: {str(e)}")
 
-    # ----------------------------------------------------------------
-    # Audio format conversion
-    # ----------------------------------------------------------------
     def process_audio(self, audio_data):
         """
         Process audio for client-side level monitoring.
@@ -225,16 +205,12 @@ class AudioCore:
         Returns:
             dict: Contains processed audio data and level information
         """
-        # Convert to mono if multi-channel
         audio_data = audio_utils.convert_to_mono(audio_data)
-        
-        # Calculate levels and update tracking
         instant_rms_db, instant_peak_db = audio_utils.calculate_audio_levels(audio_data)
         
         now = time.time()
         self.last_update = now
 
-        # Smoothed level tracking with faster attack, slower release
         if instant_rms_db > self.rms_level:
             self.rms_level += 0.7 * (instant_rms_db - self.rms_level)
         else:
@@ -243,9 +219,8 @@ class AudioCore:
         if instant_peak_db > self.peak_level:
             self.peak_level = instant_peak_db
         else:
-            self.peak_level *= 0.95  # Slightly faster decay
+            self.peak_level *= 0.95
 
-        # Return audio metrics
         return {
             'db_level': self.rms_level,
             'noise_floor': self.noise_floor,
@@ -253,9 +228,6 @@ class AudioCore:
             'audio': audio_data
         }
 
-    # ----------------------------------------------------------------
-    # Resource cleanup
-    # ----------------------------------------------------------------
     def close(self):
         """Clean up audio resources."""
         if self.stream is not None:
@@ -264,4 +236,4 @@ class AudioCore:
                 self.stream.close()
                 self.stream = None
             except Exception as e:
-                print(f"Error closing audio stream: {e}")
+                logger.error("Error closing audio stream: %s", e)

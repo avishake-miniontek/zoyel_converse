@@ -28,6 +28,7 @@ import argparse
 import sounddevice as sd
 import datetime
 import logging
+from scipy import signal
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -45,7 +46,6 @@ from src.headless_interface import HeadlessAudioInterface
 from src.audio_core import AudioCore
 from src.llm_client import LLMClient
 from src.audio_output import AudioOutput
-from src import audio_utils
 
 # Load configuration
 with open('config.json', 'r') as f:
@@ -188,6 +188,7 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
         stream = audio_core.stream
         rate = audio_core.rate
         needs_resampling = audio_core.needs_resampling
+
         print("\nStart speaking...")
 
         loop = asyncio.get_running_loop()
@@ -206,13 +207,17 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
                     await asyncio.sleep(0.1)
                     continue
 
-                # Process audio through audio_core for level monitoring
-                processed = audio_core.process_audio(audio_data)
-                audio_data = processed['audio']
+                # Convert stereo to mono by averaging channels.
+                if len(audio_data.shape) == 2 and audio_data.shape[1] > 1:
+                    audio_data = np.mean(audio_data, axis=1)
 
-                # Resample to 16kHz specifically for server communication
+                # Resample to 16kHz if needed using scipy
                 if needs_resampling:
-                    audio_data = audio_utils.resample_audio(audio_data, rate, 16000)
+                    # Calculate up/down factors for resampling
+                    gcd = np.gcd(16000, rate)
+                    up = 16000 // gcd
+                    down = rate // gcd
+                    audio_data = signal.resample_poly(audio_data, up, down)
 
                 # Scale to int16.
                 final_data = np.clip(audio_data * 32767.0, -32767, 32767).astype(np.int16)

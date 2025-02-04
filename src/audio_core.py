@@ -205,13 +205,9 @@ class AudioCore:
         Returns:
             dict: Contains processed audio data and level information
         """
-        # Convert to mono first
         audio_data = audio_utils.convert_to_mono(audio_data)
-        
-        # Calculate levels
         instant_rms_db, instant_peak_db = audio_utils.calculate_audio_levels(audio_data)
         
-        # Update level tracking
         now = time.time()
         self.last_update = now
 

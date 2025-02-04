@@ -1,11 +1,6 @@
 """
 Tkinter-based interface that displays a rolling "speech detection" visualization
 instead of a microphone input level bar.
-
-We assume:
- - The rest of your code calls audio_interface.process_vad(is_speech)
-   whenever a new chunk is processed.
- - We keep the old device selection combo boxes if you still want them.
 """
 
 import tkinter as tk

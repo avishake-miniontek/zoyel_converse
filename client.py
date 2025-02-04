@@ -8,8 +8,6 @@ TTS audio data from the server, which it plays via AudioOutput.
 
 Usage:
     python client.py [--no-gui]
-
-Noise floor functionality has been removed entirely.
 """
 
 import sys

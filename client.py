@@ -45,6 +45,7 @@ from src.headless_interface import HeadlessAudioInterface
 from src.audio_core import AudioCore
 from src.llm_client import LLMClient
 from src.audio_output import AudioOutput
+from src import audio_utils
 
 # Load configuration
 with open('config.json', 'r') as f:
@@ -185,6 +186,8 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
             return
 
         stream = audio_core.stream
+        rate = audio_core.rate
+        needs_resampling = audio_core.needs_resampling
         print("\nStart speaking...")
 
         loop = asyncio.get_running_loop()
@@ -203,9 +206,13 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
                     await asyncio.sleep(0.1)
                     continue
 
-                # Process audio through audio_core which handles mono conversion and resampling
+                # Process audio through audio_core for level monitoring
                 processed = audio_core.process_audio(audio_data)
                 audio_data = processed['audio']
+
+                # Resample to 16kHz specifically for server communication
+                if needs_resampling:
+                    audio_data = audio_utils.resample_audio(audio_data, rate, 16000)
 
                 # Scale to int16.
                 final_data = np.clip(audio_data * 32767.0, -32767, 32767).astype(np.int16)

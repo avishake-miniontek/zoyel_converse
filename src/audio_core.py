@@ -197,7 +197,7 @@ class AudioCore:
 
     def process_audio(self, audio_data):
         """
-        Process audio for client-side level monitoring and resampling.
+        Process audio for client-side level monitoring.
         
         Args:
             audio_data: float32 array of audio samples (multi-channel or mono)
@@ -208,7 +208,7 @@ class AudioCore:
         # Convert to mono first
         audio_data = audio_utils.convert_to_mono(audio_data)
         
-        # Calculate levels before resampling to maintain accurate monitoring
+        # Calculate levels
         instant_rms_db, instant_peak_db = audio_utils.calculate_audio_levels(audio_data)
         
         # Update level tracking
@@ -224,10 +224,6 @@ class AudioCore:
             self.peak_level = instant_peak_db
         else:
             self.peak_level *= 0.95
-
-        # Resample if needed using scipy (after level calculation)
-        if self.needs_resampling and len(audio_data) > 0:
-            audio_data = audio_utils.resample_audio(audio_data, self.rate, self.DESIRED_RATE)
 
         return {
             'db_level': self.rms_level,

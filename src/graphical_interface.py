@@ -40,7 +40,10 @@ class AudioInterface:
         self.on_input_change = on_input_change
         self.on_output_change = on_output_change
 
-        # Queues for thread-safe updates
+        # Callback for text input submissions (used by client for processing text)
+        self.on_text_change: Optional[Callable[[str], None]] = None
+
+        # Queues for thread-safe updates (used if a callback is not set)
         self.input_device_queue = queue.Queue()
         self.output_device_queue = queue.Queue()
 
@@ -64,6 +67,12 @@ class AudioInterface:
             self.running = False
             self.has_gui = False
 
+    def set_text_callback(self, callback: Callable[[str], None]):
+        """
+        Register a callback to be invoked when text is submitted from the GUI.
+        """
+        self.on_text_change = callback
+
     def _init_gui(self):
         """Initialize the Tkinter GUI."""
         self.root = tk.Tk()
@@ -81,7 +90,7 @@ class AudioInterface:
         # Set up periodic updates
         self._schedule_updates()
 
-        # Queue for text input processing
+        # Queue for text input processing (fallback if no callback is set)
         self.text_input_queue = queue.Queue()
 
         # Handle window close
@@ -147,6 +156,67 @@ class AudioInterface:
         self.status_label = ttk.Label(display_frame, text="SILENT", foreground="#4a90e2")  # Soft blue
         self.status_label.grid(row=1, column=0, padx=5, pady=5)
 
+    def _create_text_input_frame(self):
+        """Create frame for text input."""
+        text_frame = ttk.LabelFrame(self.root, text="Text Input", padding=5)
+        text_frame.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
+        text_frame.grid_columnconfigure(0, weight=1)  # Make text entry expand
+
+        # Create text entry as a Text widget for multiple lines
+        self.text_entry = tk.Text(text_frame, width=50, height=3, wrap=tk.WORD)  # Multi-line text with word wrap
+        self.text_entry.grid(row=0, column=0, padx=(5, 2), pady=5, sticky="ew")
+
+        # Create send button
+        self.send_button = ttk.Button(
+            text_frame,
+            text="Send",
+            command=self._handle_text_submit
+        )
+        self.send_button.grid(row=0, column=1, padx=(2, 5), pady=5)
+
+        # Bind Enter key to submit (Shift+Enter for new line)
+        self.text_entry.bind('<Return>', self._on_enter_key)
+
+    def _on_enter_key(self, event):
+        """Handle Enter key press in text widget."""
+        if not event.state & 0x1:  # If Shift is not pressed
+            self._handle_text_submit()
+            return "break"  # Prevent default Enter behavior
+        return None  # Allow default Enter behavior (new line) when Shift is pressed
+
+    def _handle_text_submit(self):
+        """Handle text submission from entry field."""
+        text = self.text_entry.get("1.0", tk.END).strip()
+        if text:
+            print("\n[GUI] Submitting text:", text)
+            # If a callback for text submission is registered, call it directly.
+            if self.on_text_change is not None:
+                self.on_text_change(text)
+            else:
+                # Fallback: put text in the queue for polling.
+                try:
+                    self.text_input_queue.put_nowait(text)
+                except queue.Full:
+                    print("\n[GUI] Warning: Text input queue is full")
+            # Clear the entry field
+            self.text_entry.delete("1.0", tk.END)
+
+    def _on_input_device_change(self, event):
+        """Handle input device selection change."""
+        new_device = self.input_device_var.get()
+        print(f"\nSelected input device: {new_device}")
+        self.input_device_name = new_device
+        if self.on_input_change:
+            self.on_input_change(new_device)
+
+    def _on_output_device_change(self, event):
+        """Handle output device selection change."""
+        new_device = self.output_device_var.get()
+        print(f"\nSelected output device: {new_device}")
+        self.output_device_name = new_device
+        if self.on_output_change:
+            self.on_output_change(new_device)
+
     def _schedule_updates(self):
         """Schedule periodic UI updates."""
         if self.running:
@@ -188,21 +258,82 @@ class AudioInterface:
             print(f"Error getting output devices: {e}")
         return devices
 
-    def _on_input_device_change(self, event):
-        """Handle input device selection change."""
-        new_device = self.input_device_var.get()
-        print(f"\nSelected input device: {new_device}")
-        self.input_device_name = new_device
-        if self.on_input_change:
-            self.on_input_change(new_device)
+    def _process_queued_updates(self):
+        """Process any queued device updates (not used as much now)."""
+        try:
+            while True:
+                device = self.input_device_queue.get_nowait()
+                self.input_device_var.set(device)
+                self.input_device_queue.task_done()
+        except queue.Empty:
+            pass
 
-    def _on_output_device_change(self, event):
-        """Handle output device selection change."""
-        new_device = self.output_device_var.get()
-        print(f"\nSelected output device: {new_device}")
-        self.output_device_name = new_device
-        if self.on_output_change:
-            self.on_output_change(new_device)
+        try:
+            while True:
+                device = self.output_device_queue.get_nowait()
+                self.output_device_var.set(device)
+                self.output_device_queue.task_done()
+        except queue.Empty:
+            pass
+
+    def _process_speech_updates(self):
+        """Consume new is_speech states from the queue and update self.speech_history."""
+        try:
+            while True:
+                is_speech = self.speech_queue.get_nowait()
+                # Remove the oldest and append the newest state
+                self.speech_history.pop(0)
+                self.speech_history.append(is_speech)
+                self.speech_queue.task_done()
+
+                # Update the status label accordingly
+                if is_speech:
+                    self.status_label.config(text="SPEAKING", foreground="#2ecc71")  # Soft green
+                else:
+                    self.status_label.config(text="SILENT", foreground="#4a90e2")  # Soft blue
+
+        except queue.Empty:
+            pass
+
+    def _redraw_speech_graph(self):
+        """
+        Draw a simple rolling timeline of speech states in the Canvas.
+        Each bar is a small rectangle with a slight gap between bars.
+        Using softer colors: green for speech, light blue for silence.
+        """
+        self.speech_canvas.delete("all")  # clear existing
+        # Calculate bar width with a small gap between bars
+        gap = 2  # 2 pixels between bars
+        bar_width = (self.canvas_width - (gap * (self.max_points - 1))) / self.max_points
+        height = self.canvas_height
+        
+        # Add a background rectangle for better visibility
+        self.speech_canvas.create_rectangle(
+            0, 0, self.canvas_width, height,
+            fill="#f8f9fa",  # Light background
+            outline=""
+        )
+
+        for i, val in enumerate(self.speech_history):
+            x1 = i * (bar_width + gap)
+            x2 = x1 + bar_width
+            y1 = 2  # Small top margin
+            y2 = height - 2  # Small bottom margin
+
+            if val:
+                color = "#2ecc71"  # Soft green for speech
+                self.speech_canvas.create_rectangle(
+                    x1, y1, x2, y2,
+                    fill=color,
+                    outline="#27ae60"  # Slightly darker outline
+                )
+            else:
+                color = "#bdc3c7"  # Soft gray-blue for silence
+                self.speech_canvas.create_rectangle(
+                    x1, y1, x2, y2,
+                    fill=color,
+                    outline="#95a5a6"  # Slightly darker outline
+                )
 
     def _on_closing(self):
         """Handle window close."""
@@ -231,9 +362,8 @@ class AudioInterface:
             while not self.text_input_queue.empty():
                 self.text_input_queue.get_nowait()
                 
-            # Stop any pending updates
+            # Stop any pending updates by canceling all scheduled callbacks
             if hasattr(self, 'root'):
-                # Cancel all scheduled callbacks
                 for after_id in self.root.tk.call('after', 'info'):
                     self.root.after_cancel(after_id)
                 
@@ -259,85 +389,18 @@ class AudioInterface:
         """
         self.speech_queue.put(is_speech)
 
-    def _process_speech_updates(self):
-        """Consume new is_speech states from the queue and update self.speech_history."""
-        try:
-            while True:
-                is_speech = self.speech_queue.get_nowait()
-                # pop the oldest
-                self.speech_history.pop(0)
-                # push the newest
-                self.speech_history.append(is_speech)
-                self.speech_queue.task_done()
-
-                # Also update the label
-                if is_speech:
-                    self.status_label.config(text="SPEAKING", foreground="#2ecc71")  # Soft green
-                else:
-                    self.status_label.config(text="SILENT", foreground="#4a90e2")  # Soft blue
-
-        except queue.Empty:
-            pass
-
-    def _process_queued_updates(self):
-        """Process any queued device updates (not used as much now)."""
-        try:
-            while True:
-                device = self.input_device_queue.get_nowait()
-                self.input_device_var.set(device)
-                self.input_device_queue.task_done()
-        except queue.Empty:
-            pass
-
-        try:
-            while True:
-                device = self.output_device_queue.get_nowait()
-                self.output_device_var.set(device)
-                self.output_device_queue.task_done()
-        except queue.Empty:
-            pass
-
-    def _redraw_speech_graph(self):
+    def get_text_input(self):
         """
-        Draw a simple rolling timeline of speech states in the Canvas.
-        Each bar is a small rectangle with a slight gap between bars.
-        Using softer colors: green for speech, light blue for silence.
+        Thread-safe method to get text input from queue.
+        Returns None if queue is empty.
         """
-        self.speech_canvas.delete("all")  # clear existing
-        # Calculate bar width with small gap
-        gap = 2  # 2 pixels between bars
-        bar_width = (self.canvas_width - (gap * (self.max_points - 1))) / self.max_points
-        height = self.canvas_height
-        
-        # Add background for better visibility
-        self.speech_canvas.create_rectangle(
-            0, 0, self.canvas_width, height,
-            fill="#f8f9fa",  # Light background
-            outline=""
-        )
-
-        for i, val in enumerate(self.speech_history):
-            # Calculate position with gap
-            x1 = i * (bar_width + gap)
-            x2 = x1 + bar_width
-            y1 = 2  # Small top margin
-            y2 = height - 2  # Small bottom margin
-
-            if val:
-                color = "#2ecc71"  # Soft green for speech
-                # Add slight gradient effect for speech
-                self.speech_canvas.create_rectangle(
-                    x1, y1, x2, y2,
-                    fill=color,
-                    outline="#27ae60"  # Slightly darker outline
-                )
-            else:
-                color = "#bdc3c7"  # Soft gray-blue for silence
-                self.speech_canvas.create_rectangle(
-                    x1, y1, x2, y2,
-                    fill=color,
-                    outline="#95a5a6"  # Slightly darker outline
-                )
+        try:
+            text = self.text_input_queue.get_nowait()
+            print("\n[GUI] Retrieved text from queue:", text)
+            self.text_input_queue.task_done()
+            return text
+        except queue.Empty:
+            return None
 
     def update(self):
         """
@@ -351,60 +414,6 @@ class AudioInterface:
                 print(f"Error updating GUI: {e}")
                 self.running = False
                 self.has_gui = False
-
-    def _create_text_input_frame(self):
-        """Create frame for text input."""
-        text_frame = ttk.LabelFrame(self.root, text="Text Input", padding=5)
-        text_frame.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
-        text_frame.grid_columnconfigure(0, weight=1)  # Make text entry expand
-
-        # Create text entry as a Text widget for multiple lines
-        self.text_entry = tk.Text(text_frame, width=50, height=3, wrap=tk.WORD)  # Multi-line text with word wrap
-        self.text_entry.grid(row=0, column=0, padx=(5, 2), pady=5, sticky="ew")
-
-        # Create send button
-        self.send_button = ttk.Button(
-            text_frame,
-            text="Send",
-            command=self._handle_text_submit
-        )
-        self.send_button.grid(row=0, column=1, padx=(2, 5), pady=5)
-
-        # Bind Enter key to submit (Shift+Enter for new line)
-        self.text_entry.bind('<Return>', self._on_enter_key)
-
-    def _on_enter_key(self, event):
-        """Handle Enter key press in text widget."""
-        if not event.state & 0x1:  # If Shift is not pressed
-            self._handle_text_submit()
-            return "break"  # Prevent default Enter behavior
-        return None  # Allow default Enter behavior (new line) when Shift is pressed
-
-    def _handle_text_submit(self):
-        """Handle text submission from entry field."""
-        text = self.text_entry.get("1.0", tk.END).strip()
-        if text:
-            print("\n[GUI] Submitting text:", text)
-            try:
-                # Put text in queue for processing
-                self.text_input_queue.put_nowait(text)
-                # Clear the entry field
-                self.text_entry.delete("1.0", tk.END)
-            except queue.Full:
-                print("\n[GUI] Warning: Text input queue is full")
-
-    def get_text_input(self):
-        """
-        Thread-safe method to get text input from queue.
-        Returns None if queue is empty.
-        """
-        try:
-            text = self.text_input_queue.get_nowait()
-            print("\n[GUI] Retrieved text from queue:", text)
-            self.text_input_queue.task_done()
-            return text
-        except queue.Empty:
-            return None
 
     def close(self):
         """

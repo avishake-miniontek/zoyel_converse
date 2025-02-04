@@ -29,17 +29,17 @@ def bytes_to_float32_audio(audio_bytes, sample_rate=16000):
 
 def convert_to_mono(audio_data):
     """
-    Convert multi-channel audio to mono by taking the left channel.
-    This provides consistent audio input for processing.
+    Convert multi-channel audio to mono by averaging all channels.
+    This provides better quality audio input for processing.
     
     Args:
         audio_data: numpy array of shape (frames, channels) or (frames,) for mono
         
     Returns:
-        numpy array of shape (frames,) containing mono audio from left channel
+        numpy array of shape (frames,) containing mono audio averaged from all channels
     """
     if len(audio_data.shape) == 2 and audio_data.shape[1] > 1:
-        return audio_data[:, 0]  # Take left channel
+        return np.mean(audio_data, axis=1)  # Average all channels
     return audio_data
 
 def calculate_audio_levels(audio_data):

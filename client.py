@@ -207,13 +207,15 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
                     await asyncio.sleep(0.1)
                     continue
 
-                # Convert stereo to mono by averaging channels.
+                # Convert stereo to mono by averaging channels first (like original)
                 if len(audio_data.shape) == 2 and audio_data.shape[1] > 1:
                     audio_data = np.mean(audio_data, axis=1)
 
                 # Resample to 16kHz if needed using scipy
                 if needs_resampling:
-                    # Calculate up/down factors for resampling
+                    # Calculate resampling ratio (like original)
+                    ratio = 16000 / rate
+                    # Use resample_poly which is better for real-time audio
                     gcd = np.gcd(16000, rate)
                     up = 16000 // gcd
                     down = rate // gcd

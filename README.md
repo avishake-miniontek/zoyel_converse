@@ -36,6 +36,12 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
 - NVIDIA GPU with at least 4GB VRAM (required for running both Whisper and Kokoro models)
   - GPU acceleration is required for real-time performance
 - Sufficient disk space for models (approximately 10GB total)
+- PortAudio library for audio processing
+  - Ubuntu/Debian: `sudo apt-get install libportaudio2 portaudio19-dev`
+  - Fedora: `sudo dnf install portaudio portaudio-devel`
+  - Arch Linux: `sudo pacman -S portaudio`
+  - macOS: `brew install portaudio`
+  - Windows: Download and install the [PortAudio binaries](http://www.portaudio.com/download.html)
 - espeak-ng (optional) for better text-to-speech phonemization
   - Ubuntu/Debian: Usually pre-installed, if not: `sudo apt-get install espeak-ng`
   - Fedora: `sudo dnf install espeak-ng`
@@ -60,17 +66,17 @@ The server component requires Python 3.8 or higher and an NVIDIA GPU with at lea
 1. Install system dependencies:
 ```bash
 # Ubuntu/Debian
-sudo apt-get install python3-venv
+sudo apt-get install python3-venv libportaudio2 portaudio19-dev
 # Optional: Install espeak-ng for better text-to-speech phonemization
 sudo apt-get install espeak-ng
 
 # Fedora
-sudo dnf install python3-venv
+sudo dnf install python3-venv portaudio portaudio-devel
 # Optional: Install espeak-ng for better text-to-speech phonemization
 sudo dnf install espeak-ng
 
 # Arch Linux
-sudo pacman -S python
+sudo pacman -S python portaudio
 # Optional: Install espeak-ng for better text-to-speech phonemization
 sudo pacman -S espeak-ng
 ```
@@ -158,7 +164,7 @@ python server.py
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
 # Install required packages
-brew install python-tk
+brew install python-tk portaudio
 # Optional: Install espeak-ng for better text-to-speech phonemization
 brew install espeak-ng
 ```
@@ -202,7 +208,7 @@ python server.py
 1. Install system dependencies:
 ```bash
 # Ubuntu/Debian
-sudo apt-get install python3-venv python3-tk
+sudo apt-get install python3-venv python3-tk libportaudio2 portaudio19-dev
 ```
 
 2. Create your configuration file:
@@ -228,7 +234,10 @@ python client.py
 
 #### Windows Setup
 
-1. Install Python 3.8 or higher from [python.org](https://www.python.org/downloads/)
+1. Install system dependencies:
+   - Install Python 3.8 or higher from [python.org](https://www.python.org/downloads/)
+   - Download and install [PortAudio binaries](http://www.portaudio.com/download.html)
+   - Ensure the PortAudio DLL is in your system PATH
 
 2. Install required Python packages:
 ```bash
@@ -264,7 +273,7 @@ python client.py
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
 # Install required packages
-brew install python-tk
+brew install python-tk portaudio
 ```
 
 2. Create your configuration file:

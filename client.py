@@ -42,7 +42,7 @@ except ImportError:
 from src.headless_interface import HeadlessAudioInterface
 from src.audio_core import AudioCore
 from src.llm_client import LLMClient
-from src.audio_output import AudioOutput  # Assumes this module is up-to-date
+from src.audio_output import AudioOutput
 
 # Load configuration
 with open('config.json', 'r') as f:
@@ -63,6 +63,113 @@ TRIGGER_WORD = CONFIG['assistant']['name']
 ################################################################################
 # ASYNCHRONOUS TASKS
 ################################################################################
+
+class MessageHandler:
+    def __init__(self, audio_output, audio_interface, llm_client):
+        self.text_queue = asyncio.Queue()
+        self.audio_queue = asyncio.Queue()
+        self.audio_output = audio_output
+        self.audio_interface = audio_interface
+        self.llm_client = llm_client
+        self.websocket = None
+
+    async def handle_llm_chunk(self, text):
+        """Send LLM-generated text to the server as a TTS request."""
+        if self.websocket:
+            await self.websocket.send(f"TTS:{text}")
+
+    async def process_text(self, text: str):
+        """Process text input with the LLM."""
+        try:
+            if not text.lower().startswith(TRIGGER_WORD.lower()):
+                text = f"{TRIGGER_WORD}, {text}"
+            await self.audio_output.start_stream()
+            await self.llm_client.process_trigger(text, callback=self.handle_llm_chunk)
+        except Exception as e:
+            print(f"[ERROR] Failed to process text input: {e}")
+            import traceback
+            print(traceback.format_exc())
+
+async def websocket_receiver(websocket, handler):
+    """Dedicated task for receiving from WebSocket and distributing messages"""
+    handler.websocket = websocket
+    error_count = 0
+    max_errors = 3
+
+    while True:
+        try:
+            msg = await websocket.recv()
+            error_count = 0
+            
+            if isinstance(msg, bytes):
+                await handler.audio_queue.put(msg)
+            else:
+                await handler.text_queue.put(msg)
+                
+        except websockets.ConnectionClosed:
+            print("WebSocket connection closed")
+            raise
+        except Exception as e:
+            error_count += 1
+            if error_count >= max_errors:
+                print("\nToo many consecutive errors in receiver, reconnecting...")
+                raise
+            print(f"Error in receiver: {e}")
+            await asyncio.sleep(0.1)
+
+async def process_audio_messages(handler):
+    """Process audio frames"""
+    while True:
+        try:
+            msg = await handler.audio_queue.get()
+            if len(msg) >= 9:  # Minimum frame size (4 magic + 1 type + 4 length)
+                magic = msg[:4]
+                frame_type = msg[4]
+                if magic == b'MIRA':
+                    if frame_type == 0x03:
+                        if handler.audio_interface and handler.audio_interface.has_gui:
+                            is_speech = bool(msg[9])
+                            handler.audio_interface.process_vad(is_speech)
+                    else:
+                        await handler.audio_output.play_chunk(msg)
+        except Exception as e:
+            print(f"[ERROR] Failed to process audio frame: {e}")
+            await asyncio.sleep(0.001)
+
+async def process_text_messages(handler):
+    """Process text messages"""
+    while True:
+        try:
+            msg = await handler.text_queue.get()
+            
+            if msg == "TTS_ERROR":
+                print("[ERROR] Server TTS generation failed.")
+                continue
+
+            msg_lower = msg.lower()
+            trigger_pos = msg_lower.find(TRIGGER_WORD.lower())
+            if trigger_pos != -1:
+                print(f"\n[TRANSCRIPT] {msg}")
+                trigger_text = msg[trigger_pos:]
+                await handler.audio_output.start_stream()
+                asyncio.create_task(handler.process_text(trigger_text))
+                
+        except Exception as e:
+            print(f"[ERROR] Failed to process text message: {e}")
+            await asyncio.sleep(0.001)
+
+async def check_gui_input(handler):
+    """Check for GUI text input"""
+    while True:
+        try:
+            if handler.audio_interface and handler.audio_interface.has_gui:
+                text_input = handler.audio_interface.get_text_input()
+                if text_input is not None:
+                    asyncio.create_task(handler.process_text(text_input))
+            await asyncio.sleep(0.1)
+        except Exception as e:
+            print(f"[ERROR] Failed to check GUI input: {e}")
+            await asyncio.sleep(0.1)
 
 async def record_and_send_audio(websocket, audio_interface, audio_core):
     """
@@ -94,7 +201,6 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
             try:
                 # Read a chunk of audio from the microphone.
                 try:
-                    # stream.read returns a tuple (data, overflowed); data is (frames, channels)
                     audio_data = stream.read(audio_core.CHUNK)[0]
                 except Exception as e:
                     if isinstance(e, sd.PortAudioError) and "Invalid stream pointer" in str(e):
@@ -152,89 +258,6 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
         # The audio stream is managed by audio_core; do not close here.
         pass
 
-async def receive_transcripts(websocket, audio_interface):
-    """
-    Continuously receive transcripts (text) and TTS frames (bytes) from the server.
-    Text messages are processed for LLM triggers, and binary frames are passed to audio_output for playback.
-    """
-    error_count = 0
-    max_errors = 3
-
-    llm_client = LLMClient()
-
-    global audio_output
-
-    async def handle_llm_chunk(text):
-        """Send LLM-generated text to the server as a TTS request."""
-        await websocket.send(f"TTS:{text}")
-
-    async def process_text(text: str):
-        """Process text input with the LLM."""
-        try:
-            if not text.lower().startswith(TRIGGER_WORD.lower()):
-                text = f"{TRIGGER_WORD}, {text}"
-            await audio_output.start_stream()
-            await llm_client.process_trigger(text, callback=handle_llm_chunk)
-        except Exception as e:
-            print(f"[ERROR] Failed to process text input: {e}")
-            import traceback
-            print(traceback.format_exc())
-
-    while True:
-        try:
-            msg = await asyncio.wait_for(websocket.recv(), timeout=0.1)
-            error_count = 0
-        except asyncio.TimeoutError:
-            if audio_interface and audio_interface.has_gui:
-                text_input = audio_interface.get_text_input()
-                if text_input is not None:
-                    asyncio.create_task(process_text(text_input))
-            continue
-        except websockets.ConnectionClosed:
-            print("Server connection closed (transcript reader).")
-            raise
-        except Exception as e:
-            error_count += 1
-            if error_count >= max_errors:
-                print("\nToo many consecutive errors in receive_transcripts, reconnecting...")
-                raise
-            print(f"Error receiving message (attempt {error_count}/{max_errors}): {e}")
-            await asyncio.sleep(0.1)
-            continue
-
-        if isinstance(msg, bytes):
-            try:
-                if len(msg) >= 9:  # Minimum frame size (4 magic + 1 type + 4 length)
-                    magic = msg[:4]
-                    frame_type = msg[4]
-                    if magic == b'MIRA':
-                        if frame_type == 0x03:
-                            if audio_interface and audio_interface.has_gui:
-                                is_speech = bool(msg[9])
-                                audio_interface.process_vad(is_speech)
-                        else:
-                            asyncio.create_task(audio_output.play_chunk(msg))
-            except Exception as e:
-                print(f"[ERROR] Failed to process frame: {e}")
-                import traceback
-                print(traceback.format_exc())
-            continue
-
-        if msg == "TTS_ERROR":
-            print("[ERROR] Server TTS generation failed.")
-            continue
-
-        msg_lower = msg.lower()
-        trigger_pos = msg_lower.find(TRIGGER_WORD.lower())
-        if trigger_pos != -1:
-            print(f"\n[TRANSCRIPT] {msg}")
-            trigger_text = msg[trigger_pos:]
-            try:
-                await audio_output.start_stream()
-                asyncio.create_task(llm_client.process_trigger(trigger_text, callback=handle_llm_chunk))
-            except Exception as e:
-                print(f"[ERROR] LLM trigger processing: {e}")
-
 class AsyncThread(threading.Thread):
     """
     Runs the main async loop to connect to the server, handle microphone audio,
@@ -256,7 +279,7 @@ class AsyncThread(threading.Thread):
             self.websocket = await websockets.connect(SERVER_URI)
             print(f"Connected to {SERVER_URI}")
 
-            # Wait for server auth (which now does not depend on noise floor)
+            # Wait for server auth
             auth_response = await asyncio.wait_for(self.websocket.recv(), timeout=2.0)
             if auth_response != "AUTH_OK":
                 raise Exception(f"Auth failed: {auth_response}")
@@ -271,7 +294,6 @@ class AsyncThread(threading.Thread):
     async def handle_server_connection(self):
         """
         Attempt to connect and, once connected, start the tasks for sending and receiving audio.
-        (Noise floor functionality has been removed.)
         """
         retry_count = 0
         max_retries = CONFIG['client']['retry']['max_attempts']
@@ -286,9 +308,16 @@ class AsyncThread(threading.Thread):
                     await asyncio.sleep(delay_seconds)
                 continue
 
+            # Initialize message handler
+            handler = MessageHandler(audio_output, self.audio_interface, LLMClient())
+
+            # Create tasks
             self.tasks = [
                 asyncio.create_task(record_and_send_audio(self.websocket, self.audio_interface, self.audio_core)),
-                asyncio.create_task(receive_transcripts(self.websocket, self.audio_interface))
+                asyncio.create_task(websocket_receiver(self.websocket, handler)),
+                asyncio.create_task(process_audio_messages(handler)),
+                asyncio.create_task(process_text_messages(handler)),
+                asyncio.create_task(check_gui_input(handler))
             ]
 
             done, pending = await asyncio.wait(self.tasks, return_when=asyncio.FIRST_COMPLETED)

@@ -140,15 +140,35 @@ class AudioOutput:
             return
         self._do_initialize(device_name=device_name)
 
+    def get_platform_audio_config(self):
+        """
+        Get platform-specific audio configuration to better integrate with system audio.
+        """
+        system = platform.system().lower()
+        if system == 'linux':
+            # Try PulseAudio first, fall back to ALSA
+            try:
+                return {'device': 'pulse'}
+            except:
+                return {'device': None}  # Let sounddevice choose default
+        elif system == 'darwin':  # macOS
+            return {'device': 'coreaudio default'}
+        elif system == 'windows':
+            return {'device': 'wasapi'}
+        return {'device': None}  # Default fallback
+
     async def _open_stream(self, device_idx):
         """
-        Internal method to open the audio stream with better error handling. 
+        Internal method to open the audio stream with better error handling 
+        and platform-specific configuration.
         """
         try:
             buffer_size = min(2048, self.device_rate // 20)
             
+            # Get platform-specific audio config
+            platform_config = self.get_platform_audio_config()
+            
             stream_kwargs = {
-                'device': device_idx,
                 'samplerate': self.device_rate,
                 'channels': 2,
                 'dtype': np.float32,
@@ -156,6 +176,13 @@ class AudioOutput:
                 'blocksize': buffer_size,
                 'callback': self._audio_callback
             }
+
+            # If a specific device index was provided, use it
+            if device_idx is not None:
+                stream_kwargs['device'] = device_idx
+            # Otherwise use the platform-specific device
+            elif platform_config['device'] is not None:
+                stream_kwargs['device'] = platform_config['device']
 
             logger.info(f"[AUDIO] Opening stream with settings: {stream_kwargs}")
             self.stream = sd.OutputStream(**stream_kwargs)

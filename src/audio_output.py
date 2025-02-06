@@ -35,20 +35,22 @@ class AudioOutput:
         self.device_rate = None           # Will set after device selection
         self.stream = None
 
-        # A queue of final float32 stereo blocks, ready for playback
-        # Each element is shape (samples, 2)
-        # Limit queue size to prevent memory issues on resource-constrained devices
-        self.audio_queue = deque(maxlen=32)  # Limit to 32 chunks
+        # A queue of final float32 stereo blocks, ready for playback.
+        # Each element is shape (samples, 2). Limit queue size to prevent memory issues.
+        self.audio_queue = deque(maxlen=32)
 
-        # For partial frame parsing
-        self.partial_frame = b''          # leftover bytes from last chunk
-        self.current_utterance = []       # accumulate AUDIO frames until FRAME_TYPE_END
+        # For partial frame parsing.
+        self.partial_frame = b''          # Leftover bytes from last chunk.
+        self.current_utterance = []       # Accumulate AUDIO frames until FRAME_TYPE_END.
 
-        # Whether we're actively playing audio
+        # Whether we're actively playing audio.
         self.playing = False
 
-        # Device info
+        # Device info.
         self.current_device = None
+
+        # NEW: Volume factor (1.0 means full volume). May be adjusted via CLI.
+        self.volume = 1.0
 
     ###########################################################################
     # DEVICE SELECTION & INITIALIZATION
@@ -146,16 +148,16 @@ class AudioOutput:
         """
         system = platform.system().lower()
         if system == 'linux':
-            # Try PulseAudio first, fall back to ALSA
+            # Try PulseAudio first, fall back to ALSA.
             try:
                 return {'device': 'pulse'}
             except:
-                return {'device': None}  # Let sounddevice choose default
+                return {'device': None}  # Let sounddevice choose default.
         elif system == 'darwin':  # macOS
             return {'device': 'coreaudio default'}
         elif system == 'windows':
             return {'device': 'wasapi'}
-        return {'device': None}  # Default fallback
+        return {'device': None}  # Default fallback.
 
     async def _open_stream(self, device_idx):
         """
@@ -165,7 +167,7 @@ class AudioOutput:
         try:
             buffer_size = min(2048, self.device_rate // 20)
             
-            # Get platform-specific audio config
+            # Get platform-specific audio config.
             platform_config = self.get_platform_audio_config()
             
             stream_kwargs = {
@@ -177,10 +179,10 @@ class AudioOutput:
                 'callback': self._audio_callback
             }
 
-            # If a specific device index was provided, use it
+            # If a specific device index was provided, use it.
             if device_idx is not None:
                 stream_kwargs['device'] = device_idx
-            # Otherwise use the platform-specific device
+            # Otherwise use the platform-specific device.
             elif platform_config['device'] is not None:
                 stream_kwargs['device'] = platform_config['device']
 
@@ -330,6 +332,8 @@ class AudioOutput:
             float_mono = signal.resample(float_mono, samples_out)
 
         float_stereo = np.column_stack([float_mono, float_mono]).astype(np.float32)
+        # Apply the volume factor.
+        float_stereo *= self.volume
         self.audio_queue.append(float_stereo)
 
     async def play_chunk(self, chunk: bytes):

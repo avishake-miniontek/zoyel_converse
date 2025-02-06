@@ -7,7 +7,7 @@ real-time transcription, and displays the transcribed text. It also receives
 TTS audio data from the server, which it plays via AudioOutput.
 
 Usage:
-    python client.py [--no-gui]
+    python client.py [--no-gui] [--input-device DEVICE] [--output-device DEVICE] [--volume VOLUME]
 """
 
 import sys
@@ -47,7 +47,37 @@ from src.audio_core import AudioCore
 from src.llm_client import LLMClient
 from src.audio_output import AudioOutput
 
-# Load configuration
+# --- NEW: Add CLI options for input, output, and volume ---
+# First, parse CLI args before loading config so that we can patch json.load accordingly.
+parser = argparse.ArgumentParser(description='Audio Chat Client')
+parser.add_argument('--no-gui', action='store_true', help='Run in headless mode')
+parser.add_argument('--input-device', type=str, help='Name or index of the input device')
+parser.add_argument('--output-device', type=str, help='Name or index of the output device')
+parser.add_argument('--volume', type=int, help='Output volume (0-100)', choices=range(0, 101))
+args, unknown = parser.parse_known_args()
+
+# Monkey-patch json.load for config.json so that the CLI device options override the config.
+_original_json_load = json.load  # save original
+
+def patched_json_load(f, *args_, **kwargs):
+    data = _original_json_load(f, *args_, **kwargs)
+    if hasattr(f, 'name') and f.name.endswith('config.json'):
+        # Override input device if provided on the CLI.
+        if getattr(args, 'input_device', None):
+            if 'audio_devices' not in data:
+                data['audio_devices'] = {}
+            data['audio_devices']['input_device'] = args.input_device
+        # Override output device if provided on the CLI.
+        if getattr(args, 'output_device', None):
+            if 'audio_devices' not in data:
+                data['audio_devices'] = {}
+            data['audio_devices']['output_device'] = args.output_device
+    return data
+
+json.load = patched_json_load
+# --- END NEW CODE ---
+
+# Load configuration from config.json
 with open('config.json', 'r') as f:
     CONFIG = json.load(f)
 
@@ -452,10 +482,7 @@ def run_client():
     audio_core = None
 
     try:
-        parser = argparse.ArgumentParser(description='Audio Chat Client')
-        parser.add_argument('--no-gui', action='store_true', help='Run in headless mode')
-        args = parser.parse_args()
-
+        # The CLI args have already been parsed above.
         use_gui = not args.no_gui and gui_available
 
         if use_gui and platform.system() == 'Darwin':
@@ -463,6 +490,13 @@ def run_client():
             os.environ['TK_SILENCE_DEPRECATION'] = '1'
 
         audio_output = AudioOutput()
+        # --- NEW: Pass the volume setting to AudioOutput ---
+        if args.volume is not None:
+            volume_factor = max(0, min(100, args.volume)) / 100.0
+            audio_output.volume = volume_factor
+        else:
+            audio_output.volume = 1.0
+
         audio_output.initialize_sync()
 
         audio_core = AudioCore()

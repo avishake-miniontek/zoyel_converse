@@ -141,8 +141,9 @@ except Exception as e:
 
 print("Loading Kokoro TTS model...")
 voice_name = CONFIG['server']['models']['kokoro']['voice_name']
-print(f"Using voice name: {voice_name}")
-tts_pipeline = KPipeline(lang_code='a')  # Initialize TTS pipeline without batch_size
+lang_code = CONFIG['server']['models']['kokoro'].get('language_code', 'a')  # Default to 'a' if not specified
+print(f"Using voice name: {voice_name}, language code: {lang_code}")
+tts_pipeline = KPipeline(lang_code=lang_code)  # Initialize TTS pipeline without batch_size
 tts_pipeline.model = tts_pipeline.model.to(device=device, dtype=torch.float32)
 
 # Batch processing configuration

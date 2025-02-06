@@ -344,7 +344,18 @@ Here's a detailed explanation of each configuration section:
             // Windows path examples (use either format):
             // "path": "C:/Users/user/models/Kokoro-82M"
             // "path": "C:\\Users\\user\\models\\Kokoro-82M",
-            "voice_name": "af"          // Voice pack to use
+            "voice_name": "af",          // Voice pack to use
+            "language_code": "a"         // Language code for TTS (optional, defaults to 'a')
+                                        // Available languages:
+                                        // 'a' - American English
+                                        // 'b' - British English
+                                        // 'e' - Spanish
+                                        // 'f' - French
+                                        // 'h' - Hindi
+                                        // 'i' - Italian
+                                        // 'j' - Japanese (requires: pip install misaki[ja])
+                                        // 'p' - Brazilian Portuguese
+                                        // 'z' - Mandarin Chinese (requires: pip install misaki[zh])
         }
     }
 }

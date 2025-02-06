@@ -15,7 +15,8 @@
             },
             "kokoro": {
                 "path": "/path/to/kokoro/model",
-                "voice_name": "af"
+                "voice_name": "af",
+                "language_code": "a"
             }
         }
     },

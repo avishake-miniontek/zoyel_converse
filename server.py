@@ -318,7 +318,7 @@ async def process_tts_batch(server, force=False):
                 
                 if audio is not None:
                     audio = np.clip(audio, -1.0, 1.0).astype(np.float32)
-                    FRAME_SIZE = 512
+                    FRAME_SIZE = 8192
                     tasks = []
 
                     if len(audio) >= FRAME_SIZE:

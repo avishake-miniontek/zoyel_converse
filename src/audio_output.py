@@ -56,47 +56,118 @@ class AudioOutput:
     # DEVICE SELECTION & INITIALIZATION
     ###########################################################################
 
+    def _get_device_priority(self, device_name, output_channels):
+        """
+        Get priority score for audio devices. Higher number = higher priority.
+        Follows audio stack hierarchy: PipeWire > PulseAudio > ALSA
+        Considers both device type and output capability.
+        """
+        # Device must have output channels to be usable
+        if output_channels <= 0:
+            return -1
+            
+        name = device_name.lower()
+        score = 0
+        
+        # Audio servers (highest priority)
+        if 'pipewire' in name:
+            score += 100    # PipeWire is preferred
+        elif 'pulse' in name:
+            score += 90     # PulseAudio is next best
+            
+        # ALSA devices
+        if 'alsa' in name:
+            score += 50
+            if 'default' in name:
+                score += 10  # Prefer default ALSA
+                
+        # Device types (analog preferred over HDMI but both usable)
+        if 'analog' in name:
+            score += 20
+        elif 'hdmi' in name or 'monitor' in name:
+            score += 5      # Lower priority but still usable
+            
+        return score
+
     def _find_output_device(self, device_name=None):
         """
-        Find an appropriate device. If device_name is specified, look for it by name.
-        Otherwise, use the system default or the first output device we find.
+        Find appropriate output device following system audio hierarchy.
+        Only considers devices with output channels > 0.
+        Priority:
+        1. User-configured device (from config.json)
+        2. Device specified by name
+        3. System's default audio output
+        4. Best available device based on audio stack hierarchy
         """
         devices = sd.query_devices()
         output_devices = []
-
+        
         logger.info("\n[AUDIO] Available output devices:")
         for i, dev in enumerate(devices):
+            # Only consider devices with output capability
             if dev['max_output_channels'] > 0:
                 logger.info(f"   {i} {dev['name']}, ALSA ({dev['max_input_channels']} in, {dev['max_output_channels']} out)")
                 output_devices.append((i, dev))
-
-        with open('config.json', 'r') as f:
-            config = json.load(f)
+                
+        if not output_devices:
+            raise RuntimeError("[AUDIO] No devices with output channels found.")
+                
+        # 1. Check config.json for user-configured device
+        try:
+            with open('config.json', 'r') as f:
+                config = json.load(f)
+            
+            if 'audio_devices' in config and 'output_device' in config['audio_devices']:
+                output_device = config['audio_devices']['output_device']
+                if isinstance(output_device, (int, float)):
+                    device_idx = int(output_device)
+                    for i, dev in output_devices:
+                        if i == device_idx:
+                            logger.info(f"\n[AUDIO] Selected configured device: {dev['name']}")
+                            self.current_device = dev
+                            return i, dev
+        except Exception as e:
+            logger.warning(f"Error reading config.json: {e}")
         
-        if 'audio_devices' in config and 'output_device' in config['audio_devices']:
-            output_device = config['audio_devices']['output_device']
-            if isinstance(output_device, (int, float)):
-                device_idx = int(output_device)
-                for i, dev in output_devices:
-                    if i == device_idx:
-                        logger.info(f"\n[AUDIO] Selected output device: {dev['name']}")
-                        self.current_device = dev
-                        return i, dev
-        
+        # 2. Check for device specified by name
         if device_name:
             for i, dev in output_devices:
                 if dev['name'] == device_name:
-                    logger.info(f"\n[AUDIO] Selected output device: {dev['name']}")
+                    logger.info(f"\n[AUDIO] Selected specified device: {dev['name']}")
                     self.current_device = dev
                     return i, dev
-
-        default_idx = sd.default.device[1]
-        if default_idx is not None and 0 <= default_idx < len(devices):
-            device_info = devices[default_idx]
-            logger.info(f"\n[AUDIO] Selected default device: {device_info['name']}")
-            self.current_device = device_info
-            return default_idx, device_info
-
+        
+        system = platform.system().lower()
+        if system == 'linux':
+            # Score all devices based on priority
+            devices_with_priority = [
+                (i, dev, self._get_device_priority(dev['name'], dev['max_output_channels']))
+                for i, dev in output_devices
+            ]
+            
+            # Sort by priority (highest first) and filter out negative priorities
+            valid_devices = sorted(
+                [(i, dev) for i, dev, priority in devices_with_priority if priority >= 0],
+                key=lambda x: self._get_device_priority(x[1]['name'], x[1]['max_output_channels']),
+                reverse=True
+            )
+            
+            if valid_devices:
+                i, dev = valid_devices[0]
+                logger.info(f"\n[AUDIO] Selected best available device: {dev['name']}")
+                self.current_device = dev
+                return i, dev
+        else:
+            # For non-Linux systems, try system default first
+            default_idx = sd.default.device[1]
+            if default_idx is not None:
+                for i, dev in output_devices:
+                    if i == default_idx:
+                        logger.info(f"\n[AUDIO] Selected default device: {dev['name']}")
+                        self.current_device = dev
+                        return i, dev
+                        
+        # Last resort: first available device with output channels
         if output_devices:
             i, dev = output_devices[0]
             logger.info(f"\n[AUDIO] Selected first available device: {dev['name']}")
@@ -142,35 +213,15 @@ class AudioOutput:
             return
         self._do_initialize(device_name=device_name)
 
-    def get_platform_audio_config(self):
-        """
-        Get platform-specific audio configuration to better integrate with system audio.
-        """
-        system = platform.system().lower()
-        if system == 'linux':
-            # Try PulseAudio first, fall back to ALSA.
-            try:
-                return {'device': 'pulse'}
-            except:
-                return {'device': None}  # Let sounddevice choose default.
-        elif system == 'darwin':  # macOS
-            return {'device': 'coreaudio default'}
-        elif system == 'windows':
-            return {'device': 'wasapi'}
-        return {'device': None}  # Default fallback.
-
     async def _open_stream(self, device_idx):
         """
-        Internal method to open the audio stream with better error handling 
-        and platform-specific configuration.
+        Internal method to open the audio stream with better error handling.
         """
         try:
             buffer_size = min(2048, self.device_rate // 20)
             
-            # Get platform-specific audio config.
-            platform_config = self.get_platform_audio_config()
-            
             stream_kwargs = {
+                'device': device_idx,
                 'samplerate': self.device_rate,
                 'channels': 2,
                 'dtype': np.float32,
@@ -178,13 +229,6 @@ class AudioOutput:
                 'blocksize': buffer_size,
                 'callback': self._audio_callback
             }
-
-            # If a specific device index was provided, use it.
-            if device_idx is not None:
-                stream_kwargs['device'] = device_idx
-            # Otherwise use the platform-specific device.
-            elif platform_config['device'] is not None:
-                stream_kwargs['device'] = platform_config['device']
 
             logger.info(f"[AUDIO] Opening stream with settings: {stream_kwargs}")
             self.stream = sd.OutputStream(**stream_kwargs)

@@ -81,6 +81,33 @@ json.load = patched_json_load
 with open('config.json', 'r') as f:
     CONFIG = json.load(f)
 
+# Define Mira alternatives for trigger word detection
+MIRA_ALTERNATIVES = frozenset(['mira', 'nira', 'neera', 'miro', 'munira'])
+
+def find_trigger_word(msg: str, trigger: str) -> int:
+    """Find the position of trigger word or its alternatives in the message."""
+    msg_lower = msg.lower()
+    # First try exact configured trigger
+    pos = msg_lower.find(trigger.lower())
+    # If configured trigger is "mira" and not found, check alternatives
+    if pos == -1 and trigger.lower() == "mira":
+        for alt in MIRA_ALTERNATIVES:
+            pos = msg_lower.find(alt)
+            if pos != -1:
+                break
+    return pos
+
+def check_trigger_word(text: str, trigger: str) -> bool:
+    """Check if text starts with trigger word or its alternatives."""
+    text_lower = text.lower()
+    # First try exact configured trigger
+    if text_lower.startswith(trigger.lower()):
+        return True
+    # If configured trigger is "mira", check alternatives
+    if trigger.lower() == "mira":
+        return any(text_lower.startswith(alt) for alt in MIRA_ALTERNATIVES)
+    return False
+
 # Server configuration
 API_KEY = CONFIG['server']['websocket']['api_key']
 SERVER_HOST = CONFIG['server']['websocket']['host']
@@ -114,7 +141,7 @@ class MessageHandler:
     async def process_text(self, text: str):
         """Process text input with the LLM."""
         try:
-            if not text.lower().startswith(TRIGGER_WORD.lower()):
+            if not check_trigger_word(text, TRIGGER_WORD):
                 text = f"{TRIGGER_WORD}, {text}"
             await self.audio_output.start_stream()
             await self.llm_client.process_trigger(text, callback=self.handle_llm_chunk)
@@ -177,8 +204,7 @@ async def process_text_messages(handler):
                 logger.error("Server TTS generation failed.")
                 continue
 
-            msg_lower = msg.lower()
-            trigger_pos = msg_lower.find(TRIGGER_WORD.lower())
+            trigger_pos = find_trigger_word(msg, TRIGGER_WORD)
             if trigger_pos != -1:
                 print(f"\n[TRANSCRIPT] {msg}")
                 trigger_text = msg[trigger_pos:]

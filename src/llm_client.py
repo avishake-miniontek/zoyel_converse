@@ -14,6 +14,28 @@ import time
 from openai import AsyncOpenAI
 from typing import Optional, List, Dict
 from src.token_counter import estimate_messages_tokens
+import re
+
+def find_sentence_boundary(text: str) -> int:
+    """
+    Returns the index of a valid sentence boundary in the given text,
+    ignoring punctuation that is part of a decimal number.
+    
+    The regex looks for a punctuation mark (., !, or ?)
+    that is not immediately preceded by a digit and is followed by whitespace or the end of the string.
+    If no match is found, a fallback manual scan is used.
+    """
+    pattern = re.compile(r'(?<!\d)([.!?])(?=\s|$)')
+    matches = list(pattern.finditer(text))
+    if matches:
+        return matches[-1].start()
+    # Fallback: manually scan from the end.
+    for i in range(len(text) - 1, -1, -1):
+        if text[i] in ".!?":
+            if text[i] == '.' and i > 0 and i < len(text) - 1 and text[i - 1].isdigit() and text[i + 1].isdigit():
+                continue
+            return i
+    return -1
 
 class LLMClient:
     """Client for interacting with vLLM server using OpenAI-compatible API."""
@@ -87,8 +109,7 @@ class LLMClient:
 3) Never use bullet points, numbered lists, or special characters.
 4) Keep responses concise and clear since they will be spoken aloud.
 5) Express lists or multiple points in a natural spoken way using words like 'first', 'also', 'finally', etc.
-6) Use punctuation only for natural speech pauses (periods, commas, question marks).
-7) When working with numbers that have decimals, output them as words, example: 1.5 becomes 'one point five', 0.6 becomes 'zero point six'."""
+6) Use punctuation only for natural speech pauses (periods, commas, question marks)."""
 
             # Prepare messages with conversation history
             messages = [{"role": "system", "content": system_prompt}]
@@ -125,21 +146,18 @@ class LLMClient:
                     buffer += content
                     full_response += content
                     
-                    # Send complete sentences to TTS as they arrive
-                    while '.' in buffer or '!' in buffer or '?' in buffer:
-                        # Find the last sentence boundary
-                        last_period = max(buffer.rfind('.'), buffer.rfind('!'), buffer.rfind('?'))
-                        if last_period == -1:
+                    # Use the helper to send complete sentences to TTS as they arrive.
+                    while True:
+                        boundary = find_sentence_boundary(buffer)
+                        if boundary == -1:
                             break
-                            
-                        # Extract the complete sentence(s)
-                        sentence = buffer[:last_period + 1].strip()
+                        # If the punctuation is at the very end and is likely part of a decimal (e.g. "0."), wait for more text.
+                        if boundary == len(buffer) - 1 and re.search(r'\d\.$', buffer):
+                            break
+                        sentence = buffer[:boundary+1].strip()
                         if sentence and callback:
-                            # Create non-blocking TTS task
                             asyncio.create_task(callback(sentence))
-                            
-                        # Keep the remainder in the buffer
-                        buffer = buffer[last_period + 1:].strip()
+                        buffer = buffer[boundary+1:].strip()
             # Send any remaining text without waiting
             if buffer.strip() and callback:
                 asyncio.create_task(callback(buffer.strip()))

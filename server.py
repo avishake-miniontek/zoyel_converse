@@ -11,6 +11,7 @@ import struct
 from collections import deque
 from urllib.parse import urlparse, parse_qs
 import datetime
+import re
 
 ################################################################################
 # GPU SELECTION
@@ -288,6 +289,27 @@ async def send_end_frame(websocket):
 # Keep track of accumulated text for each client
 client_tts_buffers = {}
 
+def find_sentence_split_index(text: str) -> int:
+    """
+    Returns the index of a valid sentence-ending punctuation character in text.
+    This function considers '.', '!', and '?' as potential sentence terminators,
+    but skips periods that appear to be part of a decimal number (i.e. when the
+    period is both preceded and followed by a digit).
+    If no valid sentence end is found, returns -1.
+    """
+    pattern = re.compile(r'(?<!\d)([.!?])(?=\s|$)')
+    matches = list(pattern.finditer(text))
+    if matches:
+        return matches[-1].start()
+    # Fallback: manually scan from the end
+    for i in range(len(text) - 1, -1, -1):
+        ch = text[i]
+        if ch in ".!?":
+            if ch == '.' and i > 0 and i < len(text) - 1 and text[i - 1].isdigit() and text[i + 1].isdigit():
+                continue
+            return i
+    return -1
+
 async def process_tts_batch(server, force=False):
     """Process TTS requests sequentially."""
     if not server.tts_batch:
@@ -351,6 +373,7 @@ async def handle_tts_multi_utterances(websocket, text, client_id):
     """
     Accumulates text until we have a complete sentence, then adds to TTS batch.
     A sentence is considered complete if it ends with ., !, or ?.
+    With the fix, even if the sentence ends with a decimal (e.g. "0.1173."), it will be flushed.
     """
     try:
         # Initialize or get buffer for this client
@@ -361,35 +384,24 @@ async def handle_tts_multi_utterances(websocket, text, client_id):
         client_tts_buffers[client_id] += text
         buffer = client_tts_buffers[client_id]
         
-        # Check if we have any complete sentences
-        sentence_end_chars = ".!?"
-        last_end = -1
-        for char in sentence_end_chars:
-            pos = buffer.rfind(char)
-            if pos > last_end:
-                last_end = pos
+        split_index = find_sentence_split_index(buffer)
+        if split_index < 0:
+            return
         
-        # If we have a complete sentence
-        if last_end >= 0:
-            # Extract the complete sentence(s)
-            sentence = buffer[:last_end + 1].strip()
-            # Keep the remainder in the buffer
-            remainder = buffer[last_end + 1:].strip()
-            client_tts_buffers[client_id] = remainder
+        # Flush the sentence regardless of whether the boundary is preceded by a digit.
+        sentence = buffer[:split_index + 1].strip()
+        remainder = buffer[split_index + 1:].strip()
+        client_tts_buffers[client_id] = remainder
             
-            if remainder:
-                print(f"[TTS] Buffering remaining text: '{remainder}'")
+        if remainder:
+            print(f"[TTS] Buffering remaining text: '{remainder}'")
             
-            if sentence:
-                server = client_settings_manager.get_audio_server(client_id)
-                
-                # Add to batch
-                server.tts_batch.append((sentence, websocket))
-                server.tts_batch_last_update = time.time()
-                
-                # Process batch if needed
-                await process_tts_batch(server)
-
+        if sentence:
+            server = client_settings_manager.get_audio_server(client_id)
+            server.tts_batch.append((sentence, websocket))
+            server.tts_batch_last_update = time.time()
+            await process_tts_batch(server)
+    
     except Exception as e:
         print(f"TTS Error: {e}")
         import traceback

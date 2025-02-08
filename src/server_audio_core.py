@@ -22,8 +22,9 @@ class ServerAudioCore:
         self.DESIRED_RATE = self.config['audio_processing']['desired_rate']
 
         # Preroll and audio buffering
-        self.preroll_duration = self.config['speech_detection']['preroll_duration']
+        self.preroll_duration = max(0.5, self.config['speech_detection']['preroll_duration'])  # Ensure minimum of 0.5s
         self.preroll_samples = int(self.DESIRED_RATE * self.preroll_duration)
+        print(f"[VAD] Preroll configured for {self.preroll_duration:.1f}s ({self.preroll_samples} samples)")
         self.preroll_buffer = deque(maxlen=self.preroll_samples)
         self.audio_buffer = np.array([], dtype=np.float32)  # Accumulates audio during speech
 
@@ -79,16 +80,10 @@ class ServerAudioCore:
         self._vad_buffer = []
 
     def get_preroll_audio(self):
-        """
-        Retrieve pre-roll audio from the rolling buffer.
-        Excludes the most recent 0.1 seconds to avoid cutting off the speech onset.
-        """
-        exclusion = int(self.DESIRED_RATE * 0.1)
-        if len(self.preroll_buffer) > exclusion:
-            preroll = np.array(list(self.preroll_buffer)[:-exclusion], dtype=np.float32)
-        else:
-            preroll = np.array([], dtype=np.float32)
-        return preroll
+        """Retrieve pre-roll audio from the rolling buffer."""
+        if len(self.preroll_buffer) > 0:
+            return np.array(list(self.preroll_buffer), dtype=np.float32)
+        return np.array([], dtype=np.float32)
 
     def process_audio(self, audio_bytes):
         """
@@ -194,7 +189,12 @@ class ServerAudioCore:
                 self.last_speech_time = time.time()
                 # Retrieve preroll audio and begin accumulating the utterance
                 preroll = self.get_preroll_audio()
-                self.audio_buffer = preroll if len(preroll) > 0 else np.array([], dtype=np.float32)
+                if len(preroll) > 0:
+                    print(f"[VAD] Adding {len(preroll)/self.DESIRED_RATE:.3f}s of preroll audio")
+                    self.audio_buffer = preroll
+                else:
+                    print("[VAD] No preroll audio available")
+                    self.audio_buffer = np.array([], dtype=np.float32)
                 self.audio_buffer = np.concatenate([self.audio_buffer, audio_data])
         else:
             # Already speaking: continue accumulating audio

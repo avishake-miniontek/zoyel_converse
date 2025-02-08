@@ -12,7 +12,7 @@ if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 import time
 from openai import AsyncOpenAI
-from typing import Optional, List, Dict
+from typing import List, Dict
 from src.token_counter import estimate_messages_tokens
 import re
 
@@ -20,7 +20,7 @@ def find_sentence_boundary(text: str) -> int:
     """
     Returns the index of a valid sentence boundary in the given text,
     ignoring punctuation that is part of a decimal number.
-    
+
     The regex looks for a punctuation mark (., !, or ?)
     that is not immediately preceded by a digit and is followed by whitespace or the end of the string.
     If no match is found, a fallback manual scan is used.
@@ -58,12 +58,11 @@ class LLMClient:
         """Load configuration from JSON file."""
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"Config file not found: {config_path}")
-        
         with open(config_path, 'r') as f:
             return json.load(f)
     
     def _check_context_timeout(self) -> bool:
-        """Check if the conversation context has timed out (more than 3 minutes since last message)."""
+        """Check if the conversation context has timed out."""
         if not self.last_message_time:
             return False
         return (time.time() - self.last_message_time) > self.context_timeout
@@ -77,13 +76,13 @@ class LLMClient:
     async def process_trigger(self, transcript: str, callback=None):
         """
         Process a triggered transcript with the LLM.
-        
+
         Args:
-            transcript: The transcript text to process
-            callback: Optional callback function to handle streaming chunks
-            
+            transcript: The transcript text to process.
+            callback: Optional callback function to handle streaming chunks.
+
         Returns:
-            None, as responses are handled through the callback
+            None, as responses are handled through the callback.
         """
         try:
             # Check for manual reset trigger
@@ -140,18 +139,24 @@ class LLMClient:
             full_response = ""
             async for chunk in stream:
                 delta = chunk.choices[0].delta
-                if delta and hasattr(delta, 'content') and delta.content is not None:
-                    content = delta.content
+                content = None
+                if delta:
+                    # Try dictionary-like access; if that fails, use attribute access.
+                    try:
+                        content = delta.get("content", None)
+                    except AttributeError:
+                        content = getattr(delta, "content", None)
+                if content is not None:
                     print(content, end="", flush=True)
                     buffer += content
                     full_response += content
                     
-                    # Use the helper to send complete sentences to TTS as they arrive.
+                    # Process complete sentences from the buffer.
                     while True:
                         boundary = find_sentence_boundary(buffer)
                         if boundary == -1:
                             break
-                        # If the punctuation is at the very end and is likely part of a decimal (e.g. "0."), wait for more text.
+                        # If punctuation is at the very end and is likely part of a decimal, wait for more text.
                         if boundary == len(buffer) - 1 and re.search(r'\d\.$', buffer):
                             break
                         sentence = buffer[:boundary+1].strip()
@@ -167,28 +172,20 @@ class LLMClient:
 
             # Check token count and trim history if needed
             while True:
-                # Get all messages including system prompt
                 all_messages = [{"role": "system", "content": system_prompt}]
                 all_messages.extend(self.conversation_history)
-                
-                # Estimate total tokens
                 total_tokens = estimate_messages_tokens(all_messages)
-                
                 if total_tokens <= self.config["llm"]["conversation"]["max_tokens"]:
                     break
-                    
-                # Remove oldest exchange (user + assistant messages) if we're over the limit
+                # Remove the oldest exchange (user + assistant messages) if over the limit.
                 if len(self.conversation_history) >= 2:
                     print("\n[Context Trim] Removing oldest messages to stay within token limit")
                     self.conversation_history = self.conversation_history[2:]
                 else:
-                    # If we somehow still exceed tokens with just the latest exchange,
-                    # we have to clear everything
                     print("\n[Context Reset] Message too large, clearing history")
                     self.conversation_history = []
                     break
 
-            # Print newline after response
             print()
             
         except Exception as e:
@@ -197,12 +194,9 @@ class LLMClient:
 
 # Example usage:
 if __name__ == "__main__":
-    import asyncio
-    
     async def test():
         client = LLMClient()
         config = client.config
-        response = await client.process_trigger(f"{config['assistant']['name']}, what's the weather like today?")
-        print(f"Full response: {response}")
+        await client.process_trigger(f"{config['assistant']['name']}, what's the weather like today?")
     
     asyncio.run(test())

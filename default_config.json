@@ -41,7 +41,7 @@
         }
     },
     "speech_detection": {
-        "preroll_duration": 0.5,
+        "preroll_duration": 0.9,
         "min_speech_duration": 0.5,
         "end_silence_duration": 1.1,
         "vad_settings": {

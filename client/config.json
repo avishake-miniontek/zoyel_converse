@@ -8,7 +8,7 @@
             "port": "use WEB_SOCKET_PORT in .env",
             "api_key": "use WEB_SOCKET_SECRET_KEY in .env"
         },
-        "gpu_device": "auto",
+        "gpu_device": "auto"
     },
     "llm": {
         "model_name": "use MODEL_NAME in .env",

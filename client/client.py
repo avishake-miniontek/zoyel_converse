@@ -9,6 +9,8 @@ TTS audio data from the server, which it plays via AudioOutput.
 Usage:
     python client.py [--no-gui] [--input-device DEVICE] [--output-device DEVICE] [--volume VOLUME]
 """
+from dotenv import load_dotenv
+load_dotenv()
 
 import sys
 import asyncio
@@ -80,6 +82,9 @@ json.load = patched_json_load
 # Load configuration from config.json
 with open('config.json', 'r') as f:
     CONFIG = json.load(f)
+    CONFIG['server']['websocket']['host'] = os.getenv("WEBSOCKET_HOST", CONFIG['server']['websocket']['host'])
+    CONFIG['server']['websocket']['port'] = os.getenv("WEBSOCKET_PORT", CONFIG['server']['websocket']['port'])
+    CONFIG['server']['websocket']['api_key'] = os.getenv("WEBSOCKET_API_SECRET_KEY", CONFIG['server']['websocket']['api_key'])
 
 # Define Mira alternatives for trigger word detection
 MIRA_ALTERNATIVES = frozenset(['mira', 'nira', 'neera', 'miro', 'munira'])

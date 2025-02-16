@@ -55,7 +55,14 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
 - Audio output device (speakers)
 - Basic CPU for audio processing
 
-## Installation
+## Dependency Installation w/ Poetry
+1. Install pipx (see official pipx installation instructions).
+1. Install poetry: `pipx install poetry`
+1. Install poethepoet: `pipx install poethepoet`
+1. `poetry install` in both server/ and client/
+1. copy the .env.example files in both server and client to .env and update settings to your environment
+1. start the server by running `poe start` in server/
+1. start the client by running `poe start` in client/
 
 ### Server Setup
 

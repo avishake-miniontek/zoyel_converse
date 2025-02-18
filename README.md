@@ -50,17 +50,18 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
   - Windows: Download and install from [GitHub releases](https://github.com/espeak-ng/espeak-ng/releases)
 
 ### Client Requirements
-- Python 3.8 or higher
+- Python 3.12 or higher
 - Audio input device (microphone)
 - Audio output device (speakers)
 - Basic CPU for audio processing
 
-## Dependency Installation w/ Poetry
+### Overview of Dependency Installation w/ Poetry
+See below for specific instructions for each system.
 1. Install pipx (see official pipx installation instructions).
 1. Install poetry: `pipx install poetry`
 1. Install poethepoet: `pipx install poethepoet`
-1. `poetry install` in both server/ and client/
-1. copy the .env.example files in both server and client to .env and update settings to your environment
+1. Run `poetry install` in both server/ and client/
+1. Copy the .env.example files in both server and client to .env and update settings to your environment
 1. start the server by running `poe start` in server/
 1. start the client by running `poe start` in client/
 
@@ -88,36 +89,45 @@ sudo pacman -S python portaudio
 sudo pacman -S espeak-ng
 ```
 
-2. Clone the repository:
+2. Install pipx [see official pipx installation instructions](https://github.com/pypa/pipx).
+
+3. Install poetry and poethepoet:
+```base
+pipx install poetry
+pipx install poethepoet
+```
+
+4. Clone the repository:
 ```bash
 git clone https://github.com/KartDriver/mira_converse.git
-cd mira_converse
+cd mira_converse/server/
 ```
 
-3. Create and activate a virtual environment (recommended):
+5. Install project dependencies and setup virtual environments:
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-4. Install server dependencies:
-```bash
-pip install -r server_requirements.txt
+poetry install
 ```
 
 5. Create your configuration file:
 ```bash
 cp default_config.json config.json
+vi config.json
 ```
 
-6. Set up the required models:
+6. (Optional) Copy the example env and add your secrets there:
+```bash
+cp .env.example .env
+vi .env
+```
+
+7. Set up the required models:
    - Download the Whisper speech-to-text model from [HuggingFace](https://huggingface.co/openai/whisper-large-v3-turbo)
    - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
    - Set the downloaded model paths in your config.json
 
-7. Run the server:
+8. Run the server:
 ```bash
-python server.py
+poe start
 ```
 
 #### Windows Server Setup
@@ -218,25 +228,40 @@ python server.py
 sudo apt-get install python3-venv python3-tk libportaudio2 portaudio19-dev
 ```
 
-2. Create your configuration file:
+2. Install pipx [see official pipx installation instructions](https://github.com/pypa/pipx).
+
+3. Install poetry and poethepoet:
+```base
+pipx install poetry
+pipx install poethepoet
+```
+
+4. Clone the repository:
+```bash
+git clone https://github.com/KartDriver/mira_converse.git
+cd mira_converse/client/
+```
+
+5. Install project dependencies and setup virtual environments:
+```bash
+poetry install
+```
+
+5. Create your configuration file:
 ```bash
 cp default_config.json config.json
+vi config.json
 ```
 
-3. (Optional) Create and activate a virtual environment:
+6. (Optional) Copy the example env and add your secrets there:
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-4. Install dependencies:
-```bash
-pip install -r client_requirements.txt
+cp .env.example .env
+vi .env
 ```
 
 5. Run the client:
 ```bash
-python client.py
+poe start
 ```
 
 #### Windows Setup

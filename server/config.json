@@ -4,31 +4,20 @@
     },
     "server": {
         "websocket": {
-            "host": "localhost",
+            "host": "use WEBSOCKET_HOST & WEBSOCKER_PORT in .env",
             "port": 8765,
-            "api_key": "your_secure_key_here"
+            "api_key": "use WEBSOCKET_API_SECRET_KEY in .env"
         },
         "gpu_device": "auto",
         "models": {
             "whisper": {
-                "path": "/path/to/whisper/model"
+                "path": "define here or in .env WHISPER_PATH"
             },
             "kokoro": {
-                "path": "/path/to/kokoro/model",
-                "voice_name": "af",
+                "path": "define here or in .env KOKORO_PATH, KOKORO_VOICE_NAME, KOKORO_LANGUAGE_CODE",
+                "voice_name": "af_heart",
                 "language_code": "a"
             }
-        }
-    },
-    "llm": {
-        "model_name": "your_model_name",
-        "api_base": "http://localhost:8000/v1",
-        "api_key": "your_api_key_here",
-        "conversation": {
-            "context_timeout": 180,
-            "max_tokens": 8000,
-            "temperature": 0.7,
-            "response_max_tokens": 1024
         }
     },
     "audio_processing": {
@@ -49,7 +38,7 @@
             "consecutive_threshold": 2
         }
     },
-    "client": {
+    "test_client": {
         "retry": {
             "max_attempts": 3,
             "delay_seconds": 2

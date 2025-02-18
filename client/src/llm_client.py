@@ -44,6 +44,10 @@ class LLMClient:
         """Initialize LLM client with configuration."""
         self.config = self._load_config(config_path)
         # Use API key from config, defaulting to "not-needed" if not present
+        self.config['llm']['model_name'] = os.getenv('MODEL_NAME', self.config['llm']['model_name'])
+        self.config['llm']['api_key'] = os.getenv('API_SECRET_KEY', self.config['llm']['api_key'])
+        self.config['llm']['api_base'] = os.getenv('API_BASE', self.config['llm']['api_base'])
+
         api_key = self.config["llm"].get("api_key", "not-needed")
         self.client = AsyncOpenAI(
             base_url=self.config["llm"]["api_base"],

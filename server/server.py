@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import asyncio
 import websockets
 import numpy as np
@@ -66,6 +69,13 @@ from src import audio_utils
 # Load configuration
 with open('config.json', 'r') as f:
     CONFIG = json.load(f)
+    CONFIG['server']['websocket']['host'] = os.getenv("WEBSOCKET_HOST", CONFIG['server']['websocket']['host'])
+    CONFIG['server']['websocket']['port'] = os.getenv("WEBSOCKET_PORT", CONFIG['server']['websocket']['port'])
+    CONFIG['server']['websocket']['api_key'] = os.getenv("WEBSOCKET_API_SECRET_KEY", CONFIG['server']['websocket']['api_key'])
+    CONFIG['server']['models']['whisper']['path'] = os.getenv("WHISPER_PATH", CONFIG['server']['models']['whisper']['path'])
+    CONFIG['server']['models']['kokoro']['path'] = os.getenv("KOKORO_PATH", CONFIG['server']['models']['kokoro']['path'])
+    CONFIG['server']['models']['kokoro']['voice_name'] = os.getenv("KOKORO_VOICE_NAME", CONFIG['server']['models']['kokoro']['voice_name'])
+    CONFIG['server']['models']['kokoro']['language_code'] = os.getenv("KOKORO_LANGUAGE_CODE", CONFIG['server']['models']['kokoro']['language_code'])
 
 # Check if model paths exist
 whisper_path = CONFIG['server']['models']['whisper']['path']
@@ -325,7 +335,7 @@ async def process_tts_batch(server, force=False):
                 # Generate audio using pipeline call (which uses infer internally)
                 generator = tts_pipeline(
                     text,
-                    voice=f'{voice_name}_heart',
+                    voice=f'{voice_name}', # _heart
                     speed=1.0
                 )
                 
@@ -727,7 +737,7 @@ async def transcribe_audio(websocket):
 
 async def main():
     try:
-        host = "0.0.0.0"
+        host = CONFIG['server']['websocket']['host']
         port = CONFIG['server']['websocket']['port']
         async with websockets.serve(transcribe_audio, host, port):
             print(f"WebSocket server on ws://{host}:{port}")

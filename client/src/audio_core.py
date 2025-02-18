@@ -94,7 +94,9 @@ class AudioCore:
             logger.info("\nListing audio devices:")
             for i, dev in enumerate(devices):
                 if dev['max_input_channels'] > 0:
-                    logger.info(f"   {i} {dev['name']}, ALSA ({dev['max_input_channels']} in, {dev['max_output_channels']} out)")
+                    logger.info(f"   input : {i} {dev['name']}, ALSA ({dev['max_input_channels']} in, {dev['max_output_channels']} out)")
+                else:
+                    logger.info(f"   output: {i} {dev['name']}, ALSA ({dev['max_input_channels']} in, {dev['max_output_channels']} out)")
             working_device = None
             device_info = None
 
@@ -102,9 +104,11 @@ class AudioCore:
                 input_device = self.config['audio_devices']['input_device']
                 if isinstance(input_device, (int, float)):
                     device_idx = int(input_device)
+                    logger.info(f"       Using input device: {device_idx}")
                     if 0 <= device_idx < len(devices):
                         device_info = devices[device_idx]
                         working_device = device_idx
+                        logger.info(f"          assigned to working_device")
             else:
                 for i, device in enumerate(devices):
                     if device['max_input_channels'] > 0:

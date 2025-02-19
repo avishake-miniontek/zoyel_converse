@@ -520,8 +520,15 @@ def run_client():
             os.environ['OBJC_DISABLE_INITIALIZE_FORK_SAFETY'] = 'YES'
             os.environ['TK_SILENCE_DEPRECATION'] = '1'
 
-        audio_output = AudioOutput()
-        # --- NEW: Pass the volume setting to AudioOutput ---
+        # Load configuration from config.json with CLI overrides
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+            config['server']['websocket']['host'] = os.getenv("WEBSOCKET_HOST", config['server']['websocket']['host'])
+            config['server']['websocket']['port'] = os.getenv("WEBSOCKET_PORT", config['server']['websocket']['port'])
+            config['server']['websocket']['api_key'] = os.getenv("WEBSOCKET_API_SECRET_KEY", config['server']['websocket']['api_key'])
+
+        # Initialize audio components with config
+        audio_output = AudioOutput(config=config)
         if args.volume is not None:
             volume_factor = max(0, min(100, args.volume)) / 100.0
             audio_output.volume = volume_factor
@@ -530,7 +537,7 @@ def run_client():
 
         audio_output.initialize_sync()
 
-        audio_core = AudioCore()
+        audio_core = AudioCore(config)
 
         interface_params = {
             'input_device_name': "Initializing...",

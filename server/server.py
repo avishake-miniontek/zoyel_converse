@@ -341,15 +341,18 @@ async def process_tts_batch(server, force=False):
                 
                 audio_list = []
                 for _, _, audio in generator:
-                    if torch.is_tensor(audio):
-                        audio = audio.detach().cpu().numpy()
-                    audio_list.append(audio.astype(np.float32))
-                
+                    if audio is not None:
+                        if torch.is_tensor(audio):
+                            audio = audio.detach().cpu().numpy()
+                        if isinstance(audio, np.ndarray):
+                            audio_list.append(audio.astype(np.float32))
+
                 if audio_list:
-                    audio = np.concatenate(audio_list)
-                
-                if audio is not None:
-                    audio = np.clip(audio, -1.0, 1.0).astype(np.float32)
+                    try:
+                        audio = np.concatenate(audio_list)
+                        audio = np.clip(audio, -1.0, 1.0).astype(np.float32)
+                    except Exception as e:
+                        continue
                     FRAME_SIZE = 8192
                     tasks = []
 

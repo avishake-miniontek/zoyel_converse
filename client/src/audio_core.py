@@ -15,10 +15,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 class AudioCore:
-    def __init__(self):
-        with open('config.json', 'r') as f:
-            self.config = json.load(f)
-
+    def __init__(self, config):
+        self.config = config
         self.stream = None
         self.rate = None
         self.needs_resampling = None

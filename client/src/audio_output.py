@@ -30,7 +30,8 @@ class AudioOutput:
     FRAME_TYPE_END = 0x02
     HEADER_SIZE = 9  # 4 magic + 1 frame_type + 4 length
 
-    def __init__(self):
+    def __init__(self, config=None):
+        self.config = config
         self.input_rate = 24000           # TTS audio sample rate
         self.device_rate = None           # Will set after device selection
         self.stream = None
@@ -49,7 +50,7 @@ class AudioOutput:
         # Device info.
         self.current_device = None
 
-        # NEW: Volume factor (1.0 means full volume). May be adjusted via CLI.
+        # Volume factor (1.0 means full volume). May be adjusted via CLI.
         self.volume = 1.0
 
     ###########################################################################
@@ -94,7 +95,7 @@ class AudioOutput:
         Find appropriate output device following system audio hierarchy.
         Only considers devices with output channels > 0.
         Priority:
-        1. User-configured device (from config.json)
+        1. User-configured device (from stored config)
         2. Device specified by name
         3. System's default audio output
         4. Best available device based on audio stack hierarchy
@@ -112,22 +113,16 @@ class AudioOutput:
         if not output_devices:
             raise RuntimeError("[AUDIO] No devices with output channels found.")
                 
-        # 1. Check config.json for user-configured device
-        try:
-            with open('config.json', 'r') as f:
-                config = json.load(f)
-            
-            if 'audio_devices' in config and 'output_device' in config['audio_devices']:
-                output_device = config['audio_devices']['output_device']
-                if isinstance(output_device, (int, float)):
-                    device_idx = int(output_device)
-                    for i, dev in output_devices:
-                        if i == device_idx:
-                            logger.info(f"\n[AUDIO] Selected configured device: {dev['name']}")
-                            self.current_device = dev
-                            return i, dev
-        except Exception as e:
-            logger.warning(f"Error reading config.json: {e}")
+        # 1. Check stored config for user-configured device
+        if self.config and 'audio_devices' in self.config and 'output_device' in self.config['audio_devices']:
+            output_device = self.config['audio_devices']['output_device']
+            if isinstance(output_device, (int, float)):
+                device_idx = int(output_device)
+                for i, dev in output_devices:
+                    if i == device_idx:
+                        logger.info(f"\n[AUDIO] Selected configured device: {dev['name']}")
+                        self.current_device = dev
+                        return i, dev
         
         # 2. Check for device specified by name
         if device_name:

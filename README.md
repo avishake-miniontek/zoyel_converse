@@ -50,7 +50,7 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
   - Windows: Download and install from [GitHub releases](https://github.com/espeak-ng/espeak-ng/releases)
 
 ### Client Requirements
-- Python 3.12 or higher
+- Python 3.11 or higher
 - Audio input device (microphone)
 - Audio output device (speakers)
 - Basic CPU for audio processing

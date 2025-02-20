@@ -229,10 +229,9 @@ class AudioServer:
         if transcript in skip_phrases:
             return False
 
-        if speech_duration < self.audio_core.min_speech_duration:
-            word_count = len(transcript.split())
-            if word_count <= 2 and TRIGGER_WORD not in transcript:
-                return False
+        # Only check for trigger word presence, regardless of word count
+        if TRIGGER_WORD not in transcript.lower():
+            return False
 
         if transcript == self.last_transcript:
             if now - self.last_transcript_time < self.min_repeat_interval * 2:

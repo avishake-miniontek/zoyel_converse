@@ -16,6 +16,7 @@ soundfile = "^0.13.1"
 websockets = "^14.2"
 sounddevice = "^0.5.1"
 python-dotenv = "^1.0.1"
+gasp-py = "^0.8.1"
 
 
 [build-system]

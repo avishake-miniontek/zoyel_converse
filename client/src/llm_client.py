@@ -15,6 +15,8 @@ from openai import AsyncOpenAI
 from typing import List, Dict
 from src.token_counter import estimate_messages_tokens
 import re
+from gasp import WAILGenerator
+from src.tools.tool_registry import ToolRegistry
 
 def find_sentence_boundary(text: str) -> int:
     """
@@ -58,6 +60,12 @@ class LLMClient:
         self.last_message_time: float = 0
         self.context_timeout: float = self.config["llm"]["conversation"]["context_timeout"]
         
+        # Initialize tool registry and WAIL generator
+        self.tool_registry = ToolRegistry()
+        self.wail_generator = WAILGenerator()
+        with open(os.path.join(os.path.dirname(__file__), 'tools/tool_schema.wail'), 'r') as f:
+            self.wail_generator.load_wail(f.read())
+        
     def _load_config(self, config_path: str) -> dict:
         """Load configuration from JSON file."""
         if not os.path.exists(config_path):
@@ -76,6 +84,33 @@ class LLMClient:
         self.conversation_history = []
         self.last_message_time = 0
         print("\n[Context Reset] Conversation history cleared.")
+
+    def _generate_example_args(self, schema: dict) -> dict:
+        """Generate example arguments based on a JSON schema."""
+        if not schema or "properties" not in schema:
+            return {}
+            
+        example = {}
+        for prop_name, prop_schema in schema["properties"].items():
+            if prop_schema.get("type") == "object" and "properties" in prop_schema:
+                example[prop_name] = self._generate_example_args(prop_schema)
+            elif prop_schema.get("type") == "array":
+                if "items" in prop_schema:
+                    if prop_schema["items"].get("type") == "object":
+                        example[prop_name] = [self._generate_example_args(prop_schema["items"])]
+                    else:
+                        example[prop_name] = ["example_value"]
+                else:
+                    example[prop_name] = []
+            elif prop_schema.get("type") == "string":
+                example[prop_name] = prop_schema.get("description", "example_value")
+            elif prop_schema.get("type") == "number":
+                example[prop_name] = 0
+            elif prop_schema.get("type") == "boolean":
+                example[prop_name] = True
+            else:
+                example[prop_name] = "example_value"
+        return example
 
     async def process_trigger(self, transcript: str, callback=None):
         """
@@ -104,7 +139,29 @@ class LLMClient:
             # Update last message time
             self.last_message_time = time.time()
 
+            # No need to check trigger word since it was already handled by find_trigger_word
+
             # Create system prompt with assistant name from config
+            # Get available and enabled tools with their schemas
+            tools = self.tool_registry.list_tools()
+            if tools:
+                tools_description = "\n\n".join(
+                    f"Tool: {name}\n"
+                    f"Description: {info['description']}\n"
+                    f"Usage Instructions:\n{info['prompt_instructions']}\n"
+                    f"Schema:\n{json.dumps(info['schema'], indent=2)}\n"
+                    f"Example:\n"
+                    f"<tool_call>\n"
+                    f"{{\n"
+                    f"    \"name\": \"{name}\",\n"
+                    f"    \"arguments\": {json.dumps(self._generate_example_args(info['schema']), indent=4)}\n"
+                    f"}}\n"
+                    f"</tool_call>"
+                    for name, info in tools.items()
+                )
+            else:
+                tools_description = "No tools are currently enabled."
+
             system_prompt = f"""You are {self.config['assistant']['name']}, a helpful AI assistant who communicates through voice. Important instructions for your responses:
 
 1) Provide only plain text that will be converted to speech - never use markdown, asterisk *, code blocks, or special formatting.
@@ -112,7 +169,16 @@ class LLMClient:
 3) Never use bullet points, numbered lists, or special characters.
 4) Keep responses concise and clear since they will be spoken aloud.
 5) Express lists or multiple points in a natural spoken way using words like 'first', 'also', 'finally', etc.
-6) Use punctuation only for natural speech pauses (periods, commas, question marks)."""
+6) Use punctuation only for natural speech pauses (periods, commas, question marks).
+
+Available Tools:
+
+{tools_description}
+
+When using a tool:
+1) First acknowledge the user's request naturally
+2) Then make the tool call with the exact format shown in the examples above
+3) Wait for the tool's response before continuing"""
 
             # Prepare messages with conversation history
             messages = [{"role": "system", "content": system_prompt}]
@@ -135,12 +201,12 @@ class LLMClient:
                 stream=True
             )
             
-            # Store the user's message in history before making the request
-            self.conversation_history.append({"role": "user", "content": transcript})
-            
-            # Stream the response while collecting it
+            # Stream the response while collecting it and checking for tool calls
             buffer = ""
             full_response = ""
+            tool_call_buffer = ""
+            in_tool_call = False
+            
             async for chunk in stream:
                 delta = chunk.choices[0].delta
                 content = None
@@ -155,8 +221,95 @@ class LLMClient:
                     buffer += content
                     full_response += content
                     
+                    # Check for tool calls
+                    if "<tool_call>" in buffer:
+                        in_tool_call = True
+                        tool_call_start = buffer.index("<tool_call>") + len("<tool_call>")
+                        buffer = buffer[tool_call_start:]
+                        continue
+                        
+                    if in_tool_call:
+                        tool_call_buffer += content
+                        if "</tool_call>" in tool_call_buffer:
+                            # Extract the tool call JSON
+                            tool_call_end = tool_call_buffer.index("</tool_call>")
+                            tool_call_json = tool_call_buffer[:tool_call_end].strip()
+                            
+                            # Reset tool call state
+                            in_tool_call = False
+                            tool_call_buffer = ""
+                            buffer = buffer[tool_call_end + len("</tool_call>"):].strip()
+                            
+                            try:
+                                # Process the tool call
+                                tool_call = json.loads(tool_call_json)
+                                try:
+                                    # Get tool first to check response type
+                                    tool = self.tool_registry.get_tool(tool_call["name"])
+                                    
+                                    # Execute the tool
+                                    result = await self.tool_registry.execute_tool(
+                                        tool_call["name"],
+                                        tool_call["arguments"]
+                                    )
+                                    
+                                    formatted_response = None
+                                    if tool.llm_response:
+                                        # Store user message in history
+                                        self.conversation_history.append(
+                                            {"role": "user", "content": transcript}
+                                        )
+                                        
+                                        # Use LLM to format response
+                                        result_prompt = tool.format_result_prompt(result)
+                                        response = await self.client.chat.completions.create(
+                                            model=self.config["llm"]["model_name"],
+                                            messages=[result_prompt],
+                                            temperature=0.7,
+                                            max_tokens=150
+                                        )
+                                        formatted_response = response.choices[0].message.content
+                                        
+                                        # Store LLM response in history
+                                        self.conversation_history.append(
+                                            {"role": "assistant", "content": formatted_response}
+                                        )
+                                    else:
+                                        # For non-LLM responses, just send the direct result
+                                        formatted_response = result["result"]
+                                        
+                                        # Send response through callback
+                                        if callback:
+                                            await callback(formatted_response)
+                                        
+                                        # For non-LLM responses, store history and return to prevent further processing
+                                        if not tool.llm_response:
+                                            # Store conversation history
+                                            self.conversation_history.append(
+                                                {"role": "user", "content": transcript}
+                                            )
+                                            self.conversation_history.append(
+                                                {"role": "assistant", "content": formatted_response}
+                                            )
+                                            return
+                                        
+                                except ValueError as e:
+                                    if "disabled" in str(e):
+                                        if callback:
+                                            await callback(f"The tool '{tool_call['name']}' is currently disabled.")
+                                    else:
+                                        if callback:
+                                            await callback(f"Error executing tool: {str(e)}")
+                                except Exception as e:
+                                    if callback:
+                                        await callback(f"Error executing tool: {str(e)}")
+                            except json.JSONDecodeError:
+                                if callback:
+                                    await callback("Invalid tool call format")
+                            
+                            
                     # Process complete sentences from the buffer.
-                    while True:
+                    while True and not in_tool_call:
                         boundary = find_sentence_boundary(buffer)
                         if boundary == -1:
                             break
@@ -171,8 +324,11 @@ class LLMClient:
             if buffer.strip() and callback:
                 asyncio.create_task(callback(buffer.strip()))
                 
-            # Store the assistant's response in history
-            self.conversation_history.append({"role": "assistant", "content": full_response})
+            # Only store non-tool responses in history
+            if not in_tool_call:
+                # Store user message and assistant's response in history
+                self.conversation_history.append({"role": "user", "content": transcript})
+                self.conversation_history.append({"role": "assistant", "content": full_response})
 
             # Check token count and trim history if needed
             while True:

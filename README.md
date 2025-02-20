@@ -55,15 +55,41 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
 - Audio output device (speakers)
 - Basic CPU for audio processing
 
-### Overview of Dependency Installation w/ Poetry
-See below for specific instructions for each system.
-1. Install pipx (see official pipx installation instructions).
-1. Install poetry: `pipx install poetry`
-1. Install poethepoet: `pipx install poethepoet`
-1. Run `poetry install` in both server/ and client/
-1. Copy the .env.example files in both server and client to .env and update settings to your environment
-1. start the server by running `poe start` in server/
-1. start the client by running `poe start` in client/
+### Overview of Installation
+
+The project uses Poetry for dependency management, which handles installing all required packages in an isolated environment. Here's how to get started:
+
+1. Install Poetry:
+   ```bash
+   # Using pip
+   pip install poetry
+   
+   # Or using pipx for isolated installation (recommended for advanced users)
+   python -m pip install --user pipx
+   python -m pipx ensurepath
+   pipx install poetry
+   ```
+
+2. Set up both server and client:
+   ```bash
+   # In server directory
+   cd server/
+   poetry install  # This installs all dependencies in an isolated environment
+   cp .env.example .env
+   cp default_config.json config.json
+   
+   # In client directory
+   cd ../client/
+   poetry install  # This installs all dependencies in an isolated environment
+   cp .env.example .env
+   cp default_config.json config.json
+   ```
+
+3. Configure your environment:
+   - Edit both .env files with your specific settings (see Configuration section below)
+   - Update both config.json files as needed
+
+Note: After running `poetry install`, you can run the Python files directly since Poetry automatically activates the virtual environment in the project directory. Alternatively, you can use `poetry run` to explicitly run commands in the Poetry environment.
 
 ### Server Setup
 
@@ -74,60 +100,42 @@ The server component requires Python 3.8 or higher and an NVIDIA GPU with at lea
 1. Install system dependencies:
 ```bash
 # Ubuntu/Debian
-sudo apt-get install python3-venv libportaudio2 portaudio19-dev
+sudo apt-get install libportaudio2 portaudio19-dev
 # Optional: Install espeak-ng for better text-to-speech phonemization
 sudo apt-get install espeak-ng
 
 # Fedora
-sudo dnf install python3-venv portaudio portaudio-devel
+sudo dnf install portaudio portaudio-devel
 # Optional: Install espeak-ng for better text-to-speech phonemization
 sudo dnf install espeak-ng
 
 # Arch Linux
-sudo pacman -S python portaudio
+sudo pacman -S portaudio
 # Optional: Install espeak-ng for better text-to-speech phonemization
 sudo pacman -S espeak-ng
 ```
 
-2. Install pipx [see official pipx installation instructions](https://github.com/pypa/pipx).
-
-3. Install poetry and poethepoet:
-```base
-pipx install poetry
-pipx install poethepoet
-```
-
-4. Clone the repository:
+2. Clone and set up the repository:
 ```bash
 git clone https://github.com/KartDriver/mira_converse.git
 cd mira_converse/server/
-```
-
-5. Install project dependencies and setup virtual environments:
-```bash
 poetry install
-```
-
-5. Create your configuration file:
-```bash
-cp default_config.json config.json
-vi config.json
-```
-
-6. (Optional) Copy the example env and add your secrets there:
-```bash
 cp .env.example .env
-vi .env
+cp default_config.json config.json
 ```
 
-7. Set up the required models:
+3. Set up the required models:
    - Download the Whisper speech-to-text model from [HuggingFace](https://huggingface.co/openai/whisper-large-v3-turbo)
    - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
-   - Set the downloaded model paths in your config.json
+   - Set the downloaded model paths in your .env file
 
-8. Run the server:
+4. Run the server:
 ```bash
-poe start
+# Run directly
+python server.py
+
+# Or using Poetry explicitly
+poetry run python server.py
 ```
 
 #### Windows Server Setup
@@ -136,41 +144,27 @@ poe start
    - Install Python 3.8 or higher from [python.org](https://www.python.org/downloads/)
    - Optional: Install espeak-ng from [GitHub releases](https://github.com/espeak-ng/espeak-ng/releases) for better text-to-speech phonemization
 
-2. Install PyTorch with CUDA support:
-```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-```
-
-3. Clone the repository:
+2. Clone and set up the repository:
 ```bash
 git clone https://github.com/KartDriver/mira_converse.git
-cd mira_converse
-```
-
-4. Create and activate a virtual environment (recommended):
-```bash
-python -m venv venv
-venv\Scripts\activate
-```
-
-5. Install server dependencies:
-```bash
-pip install -r windows_server_requirements.txt
-```
-
-6. Create your configuration file:
-```bash
+cd mira_converse/server/
+poetry install
+copy .env.example .env
 copy default_config.json config.json
 ```
 
-7. Set up the required models:
+3. Set up the required models:
    - Download the Whisper speech-to-text model from [HuggingFace](https://huggingface.co/openai/whisper-large-v3-turbo)
    - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
-   - Set the downloaded model paths in your config.json
+   - Set the downloaded model paths in your .env file
 
-8. Run the server:
+4. Run the server:
 ```bash
+# Run directly
 python server.py
+
+# Or using Poetry explicitly
+poetry run python server.py
 ```
 
 #### macOS Server Setup
@@ -181,123 +175,94 @@ python server.py
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
 # Install required packages
-brew install python-tk portaudio
+brew install portaudio
 # Optional: Install espeak-ng for better text-to-speech phonemization
 brew install espeak-ng
 ```
 
-2. Clone the repository:
+2. Clone and set up the repository:
 ```bash
 git clone https://github.com/KartDriver/mira_converse.git
-cd mira_converse
-```
-
-3. Create and activate a virtual environment (recommended):
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-4. Install server dependencies:
-```bash
-pip install -r server_requirements.txt
-```
-
-5. Create your configuration file:
-```bash
+cd mira_converse/server/
+poetry install
+cp .env.example .env
 cp default_config.json config.json
 ```
 
-6. Set up the required models:
+3. Set up the required models:
    - Download the Whisper speech-to-text model from [HuggingFace](https://huggingface.co/openai/whisper-large-v3-turbo)
    - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
-   - Set the downloaded model paths in your config.json
+   - Set the downloaded model paths in your .env file
 
-7. Run the server:
+4. Run the server:
 ```bash
+# Run directly
 python server.py
+
+# Or using Poetry explicitly
+poetry run python server.py
 ```
 
 ### Client Setup
 
-#### Linux Setup
+#### Linux Client Setup
 
 1. Install system dependencies:
 ```bash
 # Ubuntu/Debian
-sudo apt-get install python3-venv python3-tk libportaudio2 portaudio19-dev
+sudo apt-get install python3-tk libportaudio2 portaudio19-dev
+
+# Fedora
+sudo dnf install python3-tk portaudio portaudio-devel
+
+# Arch Linux
+sudo pacman -S tk portaudio
 ```
 
-2. Install pipx [see official pipx installation instructions](https://github.com/pypa/pipx).
-
-3. Install poetry and poethepoet:
-```base
-pipx install poetry
-pipx install poethepoet
-```
-
-4. Clone the repository:
+2. Clone and set up the repository:
 ```bash
 git clone https://github.com/KartDriver/mira_converse.git
 cd mira_converse/client/
-```
-
-5. Install project dependencies and setup virtual environments:
-```bash
 poetry install
-```
-
-5. Create your configuration file:
-```bash
-cp default_config.json config.json
-vi config.json
-```
-
-6. (Optional) Copy the example env and add your secrets there:
-```bash
 cp .env.example .env
-vi .env
+cp default_config.json config.json
 ```
 
-5. Run the client:
+3. Run the client:
 ```bash
-poe start
+# Run directly
+python client.py
+
+# Or using Poetry explicitly
+poetry run python client.py
 ```
 
-#### Windows Setup
+#### Windows Client Setup
 
 1. Install system dependencies:
-   - Install Python 3.8 or higher from [python.org](https://www.python.org/downloads/)
+   - Install Python 3.12 or higher from [python.org](https://www.python.org/downloads/)
    - Download and install [PortAudio binaries](http://www.portaudio.com/download.html)
    - Ensure the PortAudio DLL is in your system PATH
 
-2. Install required Python packages:
+2. Clone and set up the repository:
 ```bash
-pip install setuptools>=68.0.0 websockets>=11.0.3 numpy>=1.24.0 sounddevice>=0.4.6 openai>=1.3.0 scipy>=1.11.0 soundfile>=0.12.1 PyAudio>=0.2.13
-```
-
-3. Create your configuration file:
-```bash
+git clone https://github.com/KartDriver/mira_converse.git
+cd mira_converse/client/
+poetry install
+copy .env.example .env
 copy default_config.json config.json
 ```
 
-4. (Optional) Create and activate a virtual environment:
+3. Run the client:
 ```bash
-python -m venv venv
-venv\Scripts\activate
-```
-
-5. Install dependencies:
-```bash
-pip install -r client_requirements.txt
-```
-
-6. Run the client:
-```bash
+# Run directly
 python client.py
+
+# Or using Poetry explicitly
+poetry run python client.py
 ```
 
-#### macOS Setup
+#### macOS Client Setup
 
 1. Install system dependencies:
 ```bash
@@ -308,41 +273,75 @@ python client.py
 brew install python-tk portaudio
 ```
 
-2. Create your configuration file:
+2. Clone and set up the repository:
 ```bash
+git clone https://github.com/KartDriver/mira_converse.git
+cd mira_converse/client/
+poetry install
+cp .env.example .env
 cp default_config.json config.json
 ```
 
-3. (Optional) Create and activate a virtual environment:
+3. Run the client:
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-4. Install dependencies:
-```bash
-pip install -r client_requirements.txt
-```
-
-5. Run the client:
-```bash
+# Run directly
 python client.py
+
+# Or using Poetry explicitly
+poetry run python client.py
 ```
 
 ## Configuration
 
-The system uses a configuration file to manage all settings. To get started:
+The system uses a combination of environment variables (.env) and configuration files (config.json) to manage settings. This separation allows for better security by keeping sensitive information like API keys in the environment variables while maintaining other configuration in JSON files.
 
-1. Copy the default configuration file to create your local config:
+### Environment Variables (.env)
+
+#### Server Environment Variables (server/.env)
 ```bash
-cp default_config.json config.json
+# WebSocket Configuration
+WEBSOCKET_HOST=localhost
+WEBSOCKET_PORT=8765
+WEBSOCKET_API_SECRET_KEY=your_secure_key_here
+
+# Model Paths
+WHISPER_PATH=path_to_whisper_model
+KOKORO_PATH=path_to_kokoro_model
+KOKORO_VOICE_NAME=af_heart
+KOKORO_LANGUAGE_CODE=a
 ```
 
-2. Edit `config.json` with your specific settings:
-   - Set paths to your downloaded models
-   - Configure server addresses and ports
-   - Set API keys
-   - Adjust audio processing parameters if needed
+#### Client Environment Variables (client/.env)
+```bash
+# Server Connection
+WEBSOCKET_HOST=localhost
+WEBSOCKET_PORT=8765
+WEBSOCKET_API_SECRET_KEY=your_secure_key_here
+
+# LLM Configuration
+MODEL_NAME=gpt-3.5-turbo
+API_SECRET_KEY=your_api_key_here
+API_BASE=https://api.openai.com/v1
+```
+
+### Configuration Files (config.json)
+
+The remaining settings are managed through config.json files. To get started:
+
+1. Copy the default configuration files:
+```bash
+# For server
+cp server/default_config.json server/config.json
+
+# For client
+cp client/default_config.json client/config.json
+```
+
+2. Edit the config.json files as needed. These files contain non-sensitive settings such as:
+   - Audio processing parameters
+   - Speech detection settings
+   - Conversation parameters
+   - Client retry settings
 
 Here's a detailed explanation of each configuration section:
 
@@ -448,14 +447,22 @@ These retry settings are used for both initial server connection and automatic r
 
 ## Usage
 
-1. Start the server:
+1. Start the server (in server directory):
 ```bash
+# Run directly
 python server.py
+
+# Or using Poetry explicitly
+poetry run python server.py
 ```
 
-2. Start the client:
+2. Start the client (in client directory):
 ```bash
+# Run directly
 python client.py
+
+# Or using Poetry explicitly
+poetry run python client.py
 ```
 
 3. The system will:

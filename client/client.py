@@ -36,6 +36,10 @@ from scipy import signal
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Set debug level for weather tool only
+weather_logger = logging.getLogger('src.tools.weather')
+weather_logger.setLevel(logging.DEBUG)
+
 # Conditionally import GUI modules
 gui_available = True
 try:
@@ -49,7 +53,6 @@ from src.audio_core import AudioCore
 from src.llm_client import LLMClient
 from src.audio_output import AudioOutput
 
-# --- NEW: Add CLI options for input, output, and volume ---
 # First, parse CLI args before loading config so that we can patch json.load accordingly.
 parser = argparse.ArgumentParser(description='Audio Chat Client')
 parser.add_argument('--no-gui', action='store_true', help='Run in headless mode')
@@ -77,7 +80,6 @@ def patched_json_load(f, *args_, **kwargs):
     return data
 
 json.load = patched_json_load
-# --- END NEW CODE ---
 
 # Load configuration from config.json
 with open('config.json', 'r') as f:
@@ -87,31 +89,41 @@ with open('config.json', 'r') as f:
     CONFIG['server']['websocket']['api_key'] = os.getenv("WEBSOCKET_API_SECRET_KEY", CONFIG['server']['websocket']['api_key'])
 
 # Define Mira alternatives for trigger word detection
-MIRA_ALTERNATIVES = frozenset(['mira', 'nira', 'neera', 'miro', 'munira'])
+MIRA_ALTERNATIVES = frozenset(['mira', 'nira', 'neera', 'miro', 'munira', 'miura', 'mihiro'])
 
-def find_trigger_word(msg: str, trigger: str) -> int:
-    """Find the position of trigger word or its alternatives in the message."""
+def find_trigger_word(msg: str, trigger: str) -> tuple[bool, str, str]:
+    """
+    Find the trigger word and return both the trigger portion and everything after it.
+    Returns (found, trigger_portion, text_after_trigger) where:
+    - found is True if trigger was found
+    - trigger_portion contains the actual trigger word as it appeared in the text
+    - text_after_trigger contains the text after the trigger word
+    """
     msg_lower = msg.lower()
-    # First try exact configured trigger
-    pos = msg_lower.find(trigger.lower())
-    # If configured trigger is "mira" and not found, check alternatives
-    if pos == -1 and trigger.lower() == "mira":
+    trigger_lower = trigger.lower()
+    pos = msg_lower.find(trigger_lower)
+    trigger_len = None
+    
+    # If exact trigger not found and trigger is "mira", try alternatives
+    if pos == -1 and trigger_lower == "mira":
         for alt in MIRA_ALTERNATIVES:
-            pos = msg_lower.find(alt)
-            if pos != -1:
+            alt_pos = msg_lower.find(alt)
+            if alt_pos != -1:
+                # Found alternative, use its position and length
+                pos = alt_pos
+                trigger_len = len(alt)
                 break
-    return pos
-
-def check_trigger_word(text: str, trigger: str) -> bool:
-    """Check if text starts with trigger word or its alternatives."""
-    text_lower = text.lower()
-    # First try exact configured trigger
-    if text_lower.startswith(trigger.lower()):
-        return True
-    # If configured trigger is "mira", check alternatives
-    if trigger.lower() == "mira":
-        return any(text_lower.startswith(alt) for alt in MIRA_ALTERNATIVES)
-    return False
+    
+    if pos != -1:
+        # Match found (either exact trigger or alternative)
+        if trigger_len is None:  # No alternative was used
+            trigger_len = len(trigger)
+        # Extract both parts: the trigger portion and everything after
+        trigger_portion = msg[pos:pos + trigger_len]
+        text_after = msg[pos + trigger_len:].strip()
+        return True, trigger_portion, text_after
+    
+    return False, "", ""
 
 # Server configuration
 API_KEY = CONFIG['server']['websocket']['api_key']
@@ -146,8 +158,6 @@ class MessageHandler:
     async def process_text(self, text: str):
         """Process text input with the LLM."""
         try:
-            if not check_trigger_word(text, TRIGGER_WORD):
-                text = f"{TRIGGER_WORD}, {text}"
             await self.audio_output.start_stream()
             await self.llm_client.process_trigger(text, callback=self.handle_llm_chunk)
         except Exception as e:
@@ -209,12 +219,13 @@ async def process_text_messages(handler):
                 logger.error("Server TTS generation failed.")
                 continue
 
-            trigger_pos = find_trigger_word(msg, TRIGGER_WORD)
-            if trigger_pos != -1:
+            found, trigger_portion, text_after = find_trigger_word(msg, TRIGGER_WORD)
+            if found:
+                # Log the full transcript
                 print(f"\n[TRANSCRIPT] {msg}")
-                trigger_text = msg[trigger_pos:]
+                # Send the full message to LLM (including trigger word)
                 await handler.audio_output.start_stream()
-                asyncio.create_task(handler.process_text(trigger_text))
+                asyncio.create_task(handler.process_text(msg))
                 
         except Exception as e:
             logger.error("Failed to process text message: %s", e)

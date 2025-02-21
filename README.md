@@ -29,6 +29,22 @@ MiraConverse is a real-time voice interaction system that serves as your AI conv
 - Configurable voice trigger system
 - Robust WebSocket-based client-server architecture
 
+## Tool System
+
+MiraConverse features an extensible tool system that allows the AI to perform external actions through a structured interface. Tools are Python classes that implement specific functionality and can be called during conversations. For detailed technical specifications, see the [Tool System Documentation](docs/technical/tool_system.md).
+
+### Available Tools
+
+#### Weather Tool
+Get real-time weather information for any location by asking "What's the weather in [city]?". The weather tool provides:
+- Current temperature
+- Weather conditions
+- Wind speed
+- Daily high/low temperatures
+- Precipitation probability
+
+Example: "Mira, what's the weather in San Francisco?"
+
 ## System Requirements
 
 ### Server Requirements

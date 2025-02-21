@@ -360,8 +360,18 @@ class AsyncThread(threading.Thread):
     async def connect_to_server(self):
         """Connect to the WebSocket server and wait for authentication."""
         try:
-            self.websocket = await websockets.connect(SERVER_URI)
-            logger.info(f"Connected to {SERVER_URI}")
+            self.websocket = await websockets.connect(
+                SERVER_URI,
+                ping_interval=20,    # Send ping every 20 seconds
+                ping_timeout=10,     # Wait 10 seconds for pong response
+                close_timeout=5      # Wait 5 seconds for close frame
+            )
+            logger.info(f"Connected to {SERVER_URI} (ping_interval=20s, ping_timeout=10s)")
+
+            # Set up debug logging for websocket events
+            if logger.isEnabledFor(logging.DEBUG):
+                self.websocket.logger = logger
+                logger.debug("[CLIENT] WebSocket debug logging enabled")
 
             # Wait for server auth
             auth_response = await asyncio.wait_for(self.websocket.recv(), timeout=2.0)
@@ -388,8 +398,10 @@ class AsyncThread(threading.Thread):
             if not await self.connect_to_server():
                 retry_count += 1
                 if retry_count < max_retries:
-                    logger.info(f"Retry in {delay_seconds} seconds...")
+                    logger.info(f"Connection failed. Retry in {delay_seconds} seconds... ({retry_count}/{max_retries})")
                     await asyncio.sleep(delay_seconds)
+                else:
+                    logger.error("Maximum retry attempts reached. Please check your network connection and server status.")
                 continue
 
             # Initialize message handler

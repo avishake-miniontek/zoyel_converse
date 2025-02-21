@@ -156,7 +156,7 @@ class WeatherTool(BaseTool):
                     wind_speed_unit = "miles per hour" if units["wind_speed"] == "mph" else "kilometers per hour"
                     
                     return (
-                        f"The current temperature is {round(current['temperature_2m'])} degrees {units['temperature']} "
+                        f"In {arg_dict['city']}, the current temperature is {round(current['temperature_2m'])} degrees {units['temperature']} "
                         f"with {conditions}. The wind speed is {round(current['wind_speed_10m'])} {wind_speed_unit}. "
                         f"Today's high will be {round(daily['temperature_2m_max'][0])} degrees {units['temperature']} "
                         f"and the low will be {round(daily['temperature_2m_min'][0])} degrees {units['temperature']}. "

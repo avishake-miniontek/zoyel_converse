@@ -164,6 +164,7 @@ ASR_SUB_BATCH_SIZE = 2   # Process ASR in smaller sub-batches for responsiveness
 
 TTS_BATCH_TIMEOUT = 0.2  # Process TTS batch after 200ms of no new data
 TTS_MAX_BATCH_SIZE = 4   # Maximum items in TTS batch before forcing processing
+TTS_BUFFER_TIMEOUT = 0.2  # Flush TTS buffer after 200ms of no new data
 
 ################################################################################
 # AUDIO SERVER
@@ -229,22 +230,10 @@ class AudioServer:
         if transcript in skip_phrases:
             return False
 
-        # Only check for trigger word presence, regardless of word count
-        if TRIGGER_WORD not in transcript.lower():
-            return False
-
+        # Only check for exact duplicates within the repeat interval
         if transcript == self.last_transcript:
             if now - self.last_transcript_time < self.min_repeat_interval * 2:
                 return False
-
-        for past_transcript in self.transcript_history:
-            past_words = set(past_transcript.lower().split())
-            current_words = set(transcript.split())
-            if past_words and current_words:
-                common_words = past_words.intersection(current_words)
-                similarity = len(common_words) / max(len(past_words), len(current_words))
-                if similarity > 0.8:
-                    return False
 
         self.transcript_history.append(transcript)
         self.last_transcript = transcript
@@ -254,6 +243,7 @@ class AudioServer:
 class ClientSettingsManager:
     def __init__(self):
         self.client_settings = {}
+        self.client_buffer_times = {}  # Track last update time for each client's buffer
 
     def get_audio_server(self, client_id):
         if client_id not in self.client_settings:
@@ -265,6 +255,8 @@ class ClientSettingsManager:
         if client_id in self.client_settings:
             print(f"Removing AudioServer for client {client_id}")
             del self.client_settings[client_id]
+        if client_id in self.client_buffer_times:
+            del self.client_buffer_times[client_id]
 
 client_settings_manager = ClientSettingsManager()
 
@@ -385,34 +377,64 @@ async def handle_tts_multi_utterances(websocket, text, client_id):
     """
     Accumulates text until we have a complete sentence, then adds to TTS batch.
     A sentence is considered complete if it ends with ., !, or ?.
-    With the fix, even if the sentence ends with a decimal (e.g. "0.1173."), it will be flushed.
+    Text will also be flushed if it has been in the buffer for longer than TTS_BUFFER_TIMEOUT.
     """
     try:
         # Initialize or get buffer for this client
         if client_id not in client_tts_buffers:
             client_tts_buffers[client_id] = ""
         
-        # Append new text to buffer
-        client_tts_buffers[client_id] += text
-        buffer = client_tts_buffers[client_id]
-        
-        split_index = find_sentence_split_index(buffer)
-        if split_index < 0:
-            return
-        
-        # Flush the sentence regardless of whether the boundary is preceded by a digit.
-        sentence = buffer[:split_index + 1].strip()
-        remainder = buffer[split_index + 1:].strip()
-        client_tts_buffers[client_id] = remainder
-            
-        if remainder:
-            print(f"[TTS] Buffering remaining text: '{remainder}'")
-            
-        if sentence:
+        # Force flush any existing buffer before adding new text
+        if client_tts_buffers[client_id].strip():
+            buffer = client_tts_buffers[client_id].strip()
+            if not buffer.endswith(('.', '!', '?')):
+                buffer += "."
             server = client_settings_manager.get_audio_server(client_id)
-            server.tts_batch.append((sentence, websocket))
+            server.tts_batch.append((buffer, websocket))
             server.tts_batch_last_update = time.time()
             await process_tts_batch(server)
+            client_tts_buffers[client_id] = ""
+        
+        # Append new text to buffer and update timestamp
+        client_tts_buffers[client_id] += text
+        buffer = client_tts_buffers[client_id]
+        client_settings_manager.client_buffer_times[client_id] = time.time()
+        
+        # Process any complete sentences
+        while True:
+            split_index = find_sentence_split_index(buffer)
+            if split_index < 0:
+                # If no sentence boundary found, check for timeout
+                now = time.time()
+                last_update = client_settings_manager.client_buffer_times.get(client_id, now)
+                if buffer.strip() and (now - last_update) > TTS_BUFFER_TIMEOUT:
+                    # Force flush with a period
+                    sentence = buffer.strip() + "."
+                    client_tts_buffers[client_id] = ""
+                    print(f"[TTS] Timeout flush: '{sentence}'")
+                    
+                    server = client_settings_manager.get_audio_server(client_id)
+                    server.tts_batch.append((sentence, websocket))
+                    server.tts_batch_last_update = time.time()
+                    await process_tts_batch(server)
+                break
+                
+            # Flush the sentence
+            sentence = buffer[:split_index + 1].strip()
+            remainder = buffer[split_index + 1:].strip()
+            
+            if sentence:
+                server = client_settings_manager.get_audio_server(client_id)
+                server.tts_batch.append((sentence, websocket))
+                server.tts_batch_last_update = time.time()
+                await process_tts_batch(server)
+            
+            buffer = remainder
+            client_tts_buffers[client_id] = remainder
+            
+            if remainder:
+                print(f"[TTS] Buffering remaining text: '{remainder}'")
+                client_settings_manager.client_buffer_times[client_id] = time.time()
     
     except Exception as e:
         print(f"TTS Error: {e}")

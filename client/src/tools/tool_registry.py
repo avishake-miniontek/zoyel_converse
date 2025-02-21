@@ -2,147 +2,105 @@
 """Registry for managing available tools."""
 
 import importlib
-import json
+import inspect
+import logging
 import os
-import pkgutil
-from typing import Dict, Type
+import sys
+from typing import Dict, List, Tuple, Optional
+
 from .base_tool import BaseTool
 
+# Configure logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Add a console handler if none exists
+if not logger.handlers:
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(message)s')
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
 class ToolRegistry:
+    """Registry for managing available tools."""
+    
     def __init__(self):
-        self._tools: Dict[str, BaseTool] = {}
-        self._registry_path = os.path.join(os.path.dirname(__file__), 'config', 'registry.json')
-        self._registry = self._load_registry()
-        self._discover_and_register_tools()
+        """Initialize tool registry."""
+        self.tools: Dict[str, BaseTool] = {}
+        self._discover_tools()
     
-    def _load_registry(self) -> dict:
-        """Load tool registry from JSON file."""
-        try:
-            with open(self._registry_path, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            # Create default registry if it doesn't exist
-            default_registry = {"enabled_tools": {}}
-            self._save_registry(default_registry)
-            return default_registry
-
-    def _save_registry(self, registry: dict):
-        """Save tool registry to JSON file."""
-        os.makedirs(os.path.dirname(self._registry_path), exist_ok=True)
-        with open(self._registry_path, 'w') as f:
-            json.dump(registry, f, indent=2)
-
-    def _discover_and_register_tools(self):
-        """Discover and register tools from the tools directory."""
-        tools_dir = os.path.dirname(__file__)
-        print(f"\n[Tool Discovery] Starting tool discovery in: {tools_dir}")
+    def _discover_tools(self) -> None:
+        """Discover and register available tools."""
+        logger.info("[Tool Discovery] Starting tool discovery in: %s", os.path.dirname(__file__))
         
-        def scan_directory(directory):
-            """Recursively scan directory for tool modules."""
-            print(f"[Tool Discovery] Scanning directory: {directory}")
-            for item in os.listdir(directory):
-                if item == "__pycache__" or item.startswith('_'):
-                    continue
+        # Walk through the tools directory
+        for root, dirs, files in os.walk(os.path.dirname(__file__)):
+            if "__pycache__" in root:
+                continue
+                
+            for file in files:
+                if file.endswith(".py") and not file.startswith("__"):
+                    module_name = file[:-3]
+                    rel_path = os.path.relpath(root, os.path.dirname(__file__))
+                    if rel_path == ".":
+                        continue
                     
-                item_path = os.path.join(directory, item)
-                if os.path.isdir(item_path):
-                    if os.path.exists(os.path.join(item_path, '__init__.py')):
-                        try:
-                            # Get relative path from tools directory
-                            rel_path = os.path.relpath(item_path, tools_dir)
-                            # Convert path to module notation
-                            module_path = rel_path.replace(os.path.sep, '.')
-                            print(f"[Tool Discovery] Attempting to import module: {module_path}")
-                            # Import the module
-                            module = importlib.import_module(f".{module_path}", package=__package__)
-                            print(f"[Tool Discovery] Successfully imported module: {module_path}")
-                            
-                            # Look for Tool classes
-                            for attr_name in dir(module):
-                                if attr_name.endswith('Tool') and attr_name != 'BaseTool':
-                                    print(f"[Tool Discovery] Found tool class: {attr_name}")
-                                    tool_class = getattr(module, attr_name)
-                                    if isinstance(tool_class, type) and issubclass(tool_class, BaseTool):
-                                        try:
-                                            print(f"[Tool Discovery] Initializing {attr_name}")
-                                            tool = tool_class()
-                                            print(f"[Tool Discovery] Tool name: {tool.name}")
-                                            print(f"[Tool Discovery] Tool enabled status: {self.is_tool_enabled(tool.name)}")
-                                            if tool.name and self.is_tool_enabled(tool.name):
-                                                self.register_tool(tool)
-                                                print(f"[Tool Discovery] Successfully registered tool: {tool.name}")
-                                        except Exception as e:
-                                            print(f"[Tool Discovery] Error initializing {attr_name}: {str(e)}")
-                        except ImportError as e:
-                            print(f"[Tool Discovery] Error importing {module_path}: {str(e)}")
-                    # Recursively scan subdirectories
-                    scan_directory(item_path)
+                    full_module = ".".join(rel_path.split(os.sep) + [module_name])
+                    
+                    try:
+                        logger.info("[Tool Discovery] Attempting to import module: %s", module_name)
+                        module = importlib.import_module(f".{full_module}", package=__package__)
+                        
+                        for name, obj in inspect.getmembers(module):
+                            if (inspect.isclass(obj) and 
+                                issubclass(obj, BaseTool) and 
+                                obj != BaseTool):
+                                try:
+                                    tool = obj()
+                                    if tool.name:
+                                        self.tools[tool.name] = tool
+                                        logger.info("[Tool Discovery] Registered tool: %s", tool.name)
+                                except Exception as e:
+                                    logger.error(
+                                        "[Tool Discovery] Error initializing tool %s: %s",
+                                        name,
+                                        str(e)
+                                    )
+                    except Exception as e:
+                        logger.error(
+                            "[Tool Discovery] Error importing module %s: %s",
+                            module_name,
+                            str(e)
+                        )
         
-        scan_directory(tools_dir)
-        print("[Tool Discovery] Completed tool discovery")
-        print(f"[Tool Discovery] Registered tools: {list(self._tools.keys())}")
+        logger.info("[Tool Discovery] Completed tool discovery")
+        logger.info("[Tool Discovery] Registered tools: %s", list(self.tools.keys()))
+    
+    def get_tool_prompt(self) -> str:
+        """Get prompt showing available tools."""
+        lines = ["Available tools:\n"]
+        for tool in self.tools.values():
+            args = ", ".join(f"{arg}?" if i > 0 else arg 
+                           for i, arg in enumerate(tool.args))
+            lines.append(f"{tool.name}({args}) - {tool.description}")
+        lines.append("\nTo use a tool:")
+        lines.append("1. Write a brief intro like \"Let me check that for you\"")
+        lines.append("2. Call the tool with <tool></tool> tags")
+        lines.append("3. STOP - do not write anything after the tool call")
+        lines.append("4. The response will come in a new message")
+        lines.append("\nExample:")
+        lines.append("User: What's the weather in Chicago?")
+        lines.append("Assistant: Let me check that for you.")
+        lines.append("<tool>weather('Chicago', 'IL')</tool>")
+        return "\n".join(lines)
 
-    def is_tool_enabled(self, name: str) -> bool:
-        """Check if a tool is enabled in the registry."""
-        return self._registry.get("enabled_tools", {}).get(name, True)
-    
-    def register_tool(self, tool: BaseTool) -> None:
-        """Register a new tool."""
-        if not tool.name:
-            raise ValueError("Tool must have a name")
-        if tool.name in self._tools:
-            raise ValueError(f"Tool {tool.name} is already registered")
-        
-        # Update registry if tool not present
-        if tool.name not in self._registry.get("enabled_tools", {}):
-            if "enabled_tools" not in self._registry:
-                self._registry["enabled_tools"] = {}
-            self._registry["enabled_tools"][tool.name] = True
-            self._save_registry(self._registry)
-        
-        self._tools[tool.name] = tool
-    
-    def get_tool(self, name: str) -> BaseTool:
+    def get_tool(self, name: str) -> Optional[BaseTool]:
         """Get a tool by name."""
-        if not self.is_tool_enabled(name):
-            raise ValueError(f"Tool {name} is disabled")
-        if name not in self._tools:
-            raise ValueError(f"Tool {name} not found")
-        return self._tools[name]
-    
-    def list_tools(self) -> Dict[str, dict]:
-        """List all registered and enabled tools with their schemas and instructions."""
-        return {
-            name: {
-                "description": tool.description,
-                "schema": tool.schema,
-                "prompt_instructions": tool.prompt_instructions,
-                "enabled": self.is_tool_enabled(name)
-            }
-            for name, tool in self._tools.items()
-            if self.is_tool_enabled(name)
-        }
+        return self.tools.get(name)
 
-    def enable_tool(self, name: str) -> None:
-        """Enable a tool in the registry."""
-        if "enabled_tools" not in self._registry:
-            self._registry["enabled_tools"] = {}
-        self._registry["enabled_tools"][name] = True
-        self._save_registry(self._registry)
-        # Re-discover and register tools
-        self._discover_and_register_tools()
-
-    def disable_tool(self, name: str) -> None:
-        """Disable a tool in the registry."""
-        if "enabled_tools" not in self._registry:
-            self._registry["enabled_tools"] = {}
-        self._registry["enabled_tools"][name] = False
-        self._save_registry(self._registry)
-        # Remove the tool from registry if it exists
-        if name in self._tools:
-            del self._tools[name]
-    
-    async def execute_tool(self, name: str, args: dict) -> dict:
-        """Execute a tool by name with the given arguments."""
-        tool = self.get_tool(name)
-        return await tool.execute(args)
+    async def execute_tool(self, name: str, args: List[str]) -> str:
+        """Execute a tool with ordered arguments."""
+        if name not in self.tools:
+            raise ValueError(f"Tool '{name}' not found")
+        return await self.tools[name].execute(args)

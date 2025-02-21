@@ -5,6 +5,7 @@ import json
 import logging
 import asyncio
 import aiohttp
+from typing import List, Tuple
 from ..base_tool import BaseTool
 
 # Configure logging
@@ -20,164 +21,52 @@ if not logger.handlers:
     logger.addHandler(console_handler)
 
 class WeatherTool(BaseTool):
-    # Class-level configuration validation
-    required_config_keys = ['default_location', 'units', 'forecast_days']
-    valid_temp_units = ["celsius", "fahrenheit"]
-    valid_wind_units = ["kmh", "ms", "mph", "kn"]
-    valid_precip_units = ["mm", "inch"]
-
-    def _validate_config(self, config: dict) -> None:
-        """Additional validation for weather tool configuration."""
-        super()._validate_config(config)
-        
-        settings = config['settings']
-        # Validate default location
-        if 'city' not in settings['default_location']:
-            raise ValueError("default_location must contain a city")
-        
-        # Validate units
-        if ('temperature' not in settings['units'] or
-            'wind_speed' not in settings['units'] or
-            'precipitation' not in settings['units']):
-            raise ValueError("Missing required unit configurations")
-        
-        if settings['units']['temperature'] not in self.valid_temp_units:
-            raise ValueError(f"Invalid temperature unit. Must be one of: {self.valid_temp_units}")
-        if settings['units']['wind_speed'] not in self.valid_wind_units:
-            raise ValueError(f"Invalid wind speed unit. Must be one of: {self.valid_wind_units}")
-        if settings['units']['precipitation'] not in self.valid_precip_units:
-            raise ValueError(f"Invalid precipitation unit. Must be one of: {self.valid_precip_units}")
-        
-        # Validate forecast days
-        if not isinstance(settings['forecast_days'], int) or settings['forecast_days'] < 1 or settings['forecast_days'] > 16:
-            raise ValueError("forecast_days must be an integer between 1 and 16")
-
     def __init__(self):
-        super().__init__()  # Call super().__init__() first to load config
+        super().__init__()
         self.name = "weather"
-        self.description = "Get current weather and forecast information"
-        self.system_role = "Weather Forecaster"
-        self.llm_response = False  # Use direct text response
-        self.prompt_instructions = """Empty arguments = default location
-For ambiguous cities, add state/country:
-- "weather in Paris" -> Paris, France
-- "weather in Paris, TX" -> Paris, Texas"""
-        
-        # Set up schema using loaded config
-        default_loc = self.config['settings']['default_location']
-        default_loc_str = f"{default_loc['city']}"
-        if 'state' in default_loc:
-            default_loc_str += f", {default_loc['state']}"
-        if 'country' in default_loc:
-            default_loc_str += f", {default_loc['country']}"
-        
-        self.schema = {
-            "type": "object",
-            "properties": {
-                "location": {
-                    "type": "object",
-                    "properties": {
-                        "city": {"type": "string", "description": "City name"},
-                        "state": {"type": "string", "description": "State code (US only)"},
-                        "country": {"type": "string", "description": "Two-letter country code (e.g., US for United States, GB for United Kingdom)"}
-                    },
-                    "required": ["city"],
-                    "description": f"Location to get weather for. Default location is {default_loc_str}"
-                }
-            }
-        }
-        
-    async def _get_coordinates(self, city: str, state: str = None, country: str = None) -> tuple:
+        self.description = "Get weather information for a location"
+        self.args = ["city", "state", "country"]
+        self.llm_response = False  # Weather tool returns formatted text directly
+    
+    async def _get_coordinates(self, city: str, state: str = None, country: str = None) -> Tuple[float, float]:
         """Get coordinates for a location using Open-Meteo Geocoding API."""
-        timeout = aiohttp.ClientTimeout(total=10)  # 10 second timeout
+        timeout = aiohttp.ClientTimeout(total=10)
         try:
-            # Create a new session for each request to ensure clean state
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                url = f"https://geocoding-api.open-meteo.com/v1/search"
+                url = "https://geocoding-api.open-meteo.com/v1/search"
                 params = {
                     "name": city,
                     "count": 10,
                     "language": "en",
                     "format": "json"
                 }
-                logger.debug(f"Geocoding API request: GET {url} params={params}")
                 async with session.get(url, params=params) as response:
-                    text = await response.text()
-                    logger.debug(f"Geocoding API response: {response.status} {text}")
-                    
                     if response.status != 200:
-                        error_msg = f"Unable to search for location due to a service error (HTTP {response.status}). Please try again later."
-                        logger.error(f"Geocoding API error: {response.status} - {text}")
-                        raise ValueError(error_msg)
-            
-                    try:
-                        data = json.loads(text)
-                    except json.JSONDecodeError:
-                        logger.error(f"Invalid JSON response from Geocoding API: {text}")
-                        raise ValueError("Received invalid data from the location service. Please try again later.")
-
+                        raise ValueError("Unable to search for location. Please try again later.")
+                    
+                    data = await response.json()
                     if not data.get("results"):
-                        suggestion = ""
-                        if len(city) > 3:
-                            suggestion = " Double-check the spelling or try adding the country code (e.g., 'Paris, FR' for Paris, France)."
-                        error_msg = f"I couldn't find any location matching '{city}'.{suggestion}"
-                        logger.error(f"Geocoding API returned no results for city: {city}")
-                        raise ValueError(error_msg)
-        except aiohttp.ClientError as e:
-            logger.error(f"Network error during geocoding request: {str(e)}")
-            raise ValueError("I'm having trouble connecting to the location service. Please check your internet connection and try again.")
+                        raise ValueError(f"Could not find location: {city}")
+                    
+                    results = data["results"]
+                    
+                    if country:
+                        results = [r for r in results if r.get("country_code") == country.upper()]
+                        if not results:
+                            raise ValueError(f"No locations found in {country}")
+                    
+                    if state:
+                        state_results = [r for r in results if r.get("admin1", "").upper() == state.upper()]
+                        if state_results:
+                            results = state_results
+                    
+                    result = results[0]
+                    return result["latitude"], result["longitude"]
+                    
+        except aiohttp.ClientError:
+            raise ValueError("Error connecting to location service. Please try again.")
         except asyncio.TimeoutError:
-            logger.error("Geocoding request timed out")
-            raise ValueError("The location service is taking too long to respond. Please try again later.")
-
-        filtered_results = data["results"]
-        
-        if country:
-            country = country.upper()
-            filtered_results = [r for r in filtered_results if r.get("country_code") == country]
-            if not filtered_results:
-                logger.error(f"No results found in country {country}")
-                raise ValueError(f"No locations found in {country}")
-        
-        if state:
-            state_upper = state.upper()
-            state_results = []
-            for r in filtered_results:
-                admin1 = r.get("admin1", "").upper()
-                state_mappings = {
-                    "AL": "ALABAMA", "AK": "ALASKA", "AZ": "ARIZONA", "AR": "ARKANSAS",
-                    "CA": "CALIFORNIA", "CO": "COLORADO", "CT": "CONNECTICUT", "DE": "DELAWARE",
-                    "FL": "FLORIDA", "GA": "GEORGIA", "HI": "HAWAII", "ID": "IDAHO",
-                    "IL": "ILLINOIS", "IN": "INDIANA", "IA": "IOWA", "KS": "KANSAS",
-                    "KY": "KENTUCKY", "LA": "LOUISIANA", "ME": "MAINE", "MD": "MARYLAND",
-                    "MA": "MASSACHUSETTS", "MI": "MICHIGAN", "MN": "MINNESOTA", "MS": "MISSISSIPPI",
-                    "MO": "MISSOURI", "MT": "MONTANA", "NE": "NEBRASKA", "NV": "NEVADA",
-                    "NH": "NEW HAMPSHIRE", "NJ": "NEW JERSEY", "NM": "NEW MEXICO", "NY": "NEW YORK",
-                    "NC": "NORTH CAROLINA", "ND": "NORTH DAKOTA", "OH": "OHIO", "OK": "OKLAHOMA",
-                    "OR": "OREGON", "PA": "PENNSYLVANIA", "RI": "RHODE ISLAND", "SC": "SOUTH CAROLINA",
-                    "SD": "SOUTH DAKOTA", "TN": "TENNESSEE", "TX": "TEXAS", "UT": "UTAH",
-                    "VT": "VERMONT", "VA": "VIRGINIA", "WA": "WASHINGTON", "WV": "WEST VIRGINIA",
-                    "WI": "WISCONSIN", "WY": "WYOMING"
-                }
-                if state_upper == admin1 or (len(state_upper) == 2 and state_mappings.get(state_upper) == admin1):
-                    state_results.append(r)
-            if state_results:
-                filtered_results = state_results
-            else:
-                logger.error(f"No results found in state {state_upper}")
-                raise ValueError(f"No locations found in state {state_upper}")
-        
-        if not filtered_results:
-            raise ValueError(f"No matching locations found for {city}" + 
-                          (f" in {state}" if state else "") +
-                          (f", {country}" if country else ""))
-        
-        result = filtered_results[0]
-        logger.info(f"Found coordinates for {city}" +
-                  (f", {result.get('admin1', '')}" if result.get('admin1') else "") +
-                  (f", {result.get('country_code', '')}" if result.get('country_code') else "") +
-                  f": {result['latitude']}, {result['longitude']}")
-        return result["latitude"], result["longitude"]
+            raise ValueError("Location service timed out. Please try again.")
     
     def _get_weather_code_description(self, code: int) -> str:
         """Convert WMO weather code to description."""
@@ -186,8 +75,8 @@ For ambiguous cities, add state/country:
             1: "mainly clear skys",
             2: "partly cloudy skys",
             3: "overcast skys",
-            45: "foggy",
-            48: "foggy with frost",
+            45: "foggy conditions",
+            48: "foggy conditions with frost",
             51: "light drizzle",
             53: "moderate drizzle",
             55: "heavy drizzle",
@@ -213,37 +102,24 @@ For ambiguous cities, add state/country:
         }
         return codes.get(code, "unknown conditions")
     
-    async def execute(self, args: dict) -> dict:
-        """Get weather information for the specified location."""
+    async def execute(self, args: List[str]) -> str:
+        """Execute weather tool with ordered arguments."""
         try:
-            # Get location from args or config
-            if "location" in args:
-                location = args["location"]
-            else:
-                location = self.config["settings"]["default_location"]
+            # Convert args list to dict based on defined order
+            arg_dict = {}
+            for i, value in enumerate(args):
+                if value and i < len(self.args):  # Only include non-empty args
+                    arg_dict[self.args[i]] = value
+
+            # Get coordinates
+            lat, lon = await self._get_coordinates(
+                arg_dict["city"],
+                arg_dict.get("state"),
+                arg_dict.get("country")
+            )
             
-            # Always use units from config
-            units = self.config["settings"]["units"]
-            
-            try:
-                # Get coordinates
-                lat, lon = await self._get_coordinates(
-                    location["city"],
-                    location.get("state"),
-                    location.get("country")
-                )
-            except ValueError as e:
-                # Pass through user-friendly location errors
-                raise ValueError(str(e))
-            except aiohttp.ClientError as e:
-                logger.error(f"Network error during geocoding: {str(e)}")
-                raise ValueError("I'm having trouble connecting to the location service. Please check your internet connection and try again.")
-            except asyncio.TimeoutError:
-                logger.error("Geocoding request timed out")
-                raise ValueError("The location service is taking too long to respond. Please try again later.")
-            
-            # Get weather data using a new session
-            timeout = aiohttp.ClientTimeout(total=10)  # 10 second timeout
+            # Get weather data
+            timeout = aiohttp.ClientTimeout(total=10)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 url = "https://api.open-meteo.com/v1/forecast"
                 params = {
@@ -259,63 +135,36 @@ For ambiguous cities, add state/country:
                         "temperature_2m_min",
                         "precipitation_probability_max"
                     ],
-                    "temperature_unit": units["temperature"],
-                    "wind_speed_unit": units["wind_speed"],
-                    "precipitation_unit": units["precipitation"],
+                    "temperature_unit": self.config["settings"]["units"]["temperature"],
+                    "wind_speed_unit": self.config["settings"]["units"]["wind_speed"],
+                    "precipitation_unit": self.config["settings"]["units"]["precipitation"],
                     "timezone": "auto",
                     "forecast_days": 1
                 }
                 
-                logger.debug(f"Weather API request: GET {url} params={params}")
                 async with session.get(url, params=params) as response:
-                    try:
-                        text = await response.text()
-                        logger.debug(f"Weather API response: {response.status} {text}")
-                        
-                        if response.status != 200:
-                            logger.error(f"Weather API error: {response.status} - {text}")
-                            raise ValueError("I'm having trouble getting the weather data right now. Please try again later.")
+                    if response.status != 200:
+                        raise ValueError("Unable to get weather data. Please try again later.")
                     
-                        data = json.loads(text)
-                        logger.info(f"Successfully retrieved weather data for {location['city']}")
-                    except asyncio.TimeoutError:
-                        logger.error("Weather API response timeout")
-                        raise ValueError("The weather service took too long to respond. Please try again.")
-                    except json.JSONDecodeError:
-                        logger.error(f"Invalid JSON response from Weather API: {text}")
-                        raise ValueError("Received invalid weather data. Please try again later.")
-                    except Exception as e:
-                        logger.error(f"Unexpected error processing weather response: {str(e)}")
-                        raise ValueError("An unexpected error occurred while getting weather data. Please try again later.")
+                    data = await response.json()
                     
-                    # Format current weather with units
                     current = data["current"]
                     daily = data["daily"]
                     
-                    # Format the response text directly
                     conditions = self._get_weather_code_description(current['weather_code'])
+                    units = self.config["settings"]["units"]
                     wind_speed_unit = "miles per hour" if units["wind_speed"] == "mph" else "kilometers per hour"
                     
-                    # Return formatted text directly
-                    return {
-                        "result": (
-                            f"The current temperature is {round(current['temperature_2m'])} degrees {units['temperature']} "
-                            f"with {conditions}. The wind speed is {round(current['wind_speed_10m'])} {wind_speed_unit}. "
-                            f"Today's high will be {round(daily['temperature_2m_max'][0])} degrees {units['temperature']} "
-                            f"and the low will be {round(daily['temperature_2m_min'][0])} degrees {units['temperature']}. "
-                            f"There is a {round(daily['precipitation_probability_max'][0])} percent chance of precipitation."
-                        )
-                    }
+                    return (
+                        f"The current temperature is {round(current['temperature_2m'])} degrees {units['temperature']} "
+                        f"with {conditions}. The wind speed is {round(current['wind_speed_10m'])} {wind_speed_unit}. "
+                        f"Today's high will be {round(daily['temperature_2m_max'][0])} degrees {units['temperature']} "
+                        f"and the low will be {round(daily['temperature_2m_min'][0])} degrees {units['temperature']}. "
+                        f"There is a {round(daily['precipitation_probability_max'][0])} percent chance of precipitation."
+                    )
                     
         except ValueError as e:
-            # Pass through our custom error messages
-            raise
-        except aiohttp.ClientError as e:
-            logger.error(f"Network error during weather request: {str(e)}")
-            raise ValueError("I'm having trouble connecting to the weather service. Please check your internet connection and try again.")
-        except asyncio.TimeoutError:
-            logger.error("Weather request timed out")
-            raise ValueError("The weather service is taking too long to respond. Please try again later.")
+            return str(e)
         except Exception as e:
-            logger.error(f"Unexpected error getting weather data: {str(e)}")
-            raise ValueError("Something unexpected went wrong while getting the weather data. Please try again later.")
+            logger.error(f"Error getting weather data: {str(e)}")
+            return "An error occurred while getting the weather data. Please try again later."

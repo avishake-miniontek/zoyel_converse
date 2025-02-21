@@ -30,6 +30,7 @@ import argparse
 import sounddevice as sd
 import datetime
 import logging
+import re
 from scipy import signal
 
 # Set up logging
@@ -88,8 +89,8 @@ with open('config.json', 'r') as f:
     CONFIG['server']['websocket']['port'] = os.getenv("WEBSOCKET_PORT", CONFIG['server']['websocket']['port'])
     CONFIG['server']['websocket']['api_key'] = os.getenv("WEBSOCKET_API_SECRET_KEY", CONFIG['server']['websocket']['api_key'])
 
-# Define Mira alternatives for trigger word detection
-MIRA_ALTERNATIVES = frozenset(['mira', 'nira', 'neera', 'miro', 'munira', 'miura', 'mihiro'])
+# Define Mira alternatives for trigger word detection (excluding 'mira' since it's handled by exact match)
+MIRA_ALTERNATIVES = frozenset(['nira', 'neera', 'miro', 'munira', 'miura', 'mihiro'])
 
 def find_trigger_word(msg: str, trigger: str) -> tuple[bool, str, str]:
     """
@@ -107,7 +108,8 @@ def find_trigger_word(msg: str, trigger: str) -> tuple[bool, str, str]:
     # If exact trigger not found and trigger is "mira", try alternatives
     if pos == -1 and trigger_lower == "mira":
         for alt in MIRA_ALTERNATIVES:
-            alt_pos = msg_lower.find(alt)
+            alt_lower = alt.lower()
+            alt_pos = msg_lower.find(alt_lower)
             if alt_pos != -1:
                 # Found alternative, use its position and length
                 pos = alt_pos
@@ -136,7 +138,7 @@ SERVER_URI = f"ws://{SERVER_HOST}:{SERVER_PORT}?api_key={API_KEY}&client_id={CLI
 
 # Trigger word configuration
 TRIGGER_WORD = CONFIG['assistant']['name']
-
+logger.info(f"Loaded trigger word from config: '{TRIGGER_WORD}'")
 ################################################################################
 # ASYNCHRONOUS TASKS
 ################################################################################
@@ -218,6 +220,12 @@ async def process_text_messages(handler):
             if msg == "TTS_ERROR":
                 logger.error("Server TTS generation failed.")
                 continue
+
+            # Split message into sentences for better handling
+            sentences = re.split(r'(?<=[.!?])\s+', msg.strip())
+            for sentence in sentences:
+                if sentence:  # Skip empty strings
+                    print("Message: " + sentence + "\n")
 
             found, trigger_portion, text_after = find_trigger_word(msg, TRIGGER_WORD)
             if found:
@@ -387,14 +395,12 @@ class AsyncThread(threading.Thread):
             # Initialize message handler
             handler = MessageHandler(audio_output, self.audio_interface, LLMClient())
             self.handler = handler  # Store for GUI callbacks
-
             tasks = [
                 asyncio.create_task(record_and_send_audio(self.websocket, self.audio_interface, self.audio_core)),
                 asyncio.create_task(websocket_receiver(self.websocket, handler)),
                 asyncio.create_task(process_audio_messages(handler)),
                 asyncio.create_task(process_text_messages(handler))
             ]
-
             # In headless mode, add the polling for GUI input; in GUI mode, use callback
             if not self.audio_interface.has_gui:
                 tasks.append(asyncio.create_task(check_gui_input(handler)))
@@ -545,7 +551,6 @@ def run_client():
             audio_output.volume = volume_factor
         else:
             audio_output.volume = 1.0
-
         audio_output.initialize_sync()
 
         audio_core = AudioCore(config)

@@ -42,6 +42,10 @@ def find_sentence_boundary(text: str) -> int:
     # Fallback: manually scan from the end
     for i in range(len(text) - 1, -1, -1):
         if text[i] in ".!?":
+            # If at the end of the string, check if it might be part of a decimal
+            if i == len(text) - 1 and i > 0 and text[i - 1].isdigit():
+                # Instead of returning immediately, consider this punctuation might be incomplete
+                continue  # or return -1 to indicate no complete sentence yet
             if text[i] == '.' and i > 0 and i < len(text) - 1 and text[i - 1].isdigit() and text[i + 1].isdigit():
                 continue
             return i

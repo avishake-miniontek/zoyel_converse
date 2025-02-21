@@ -5,4 +5,3 @@ sounddevice>=0.4.6
 openai>=1.3.0
 scipy>=1.11.0  # Used for audio resampling
 soundfile>=0.12.1
-gasp-py>=0.8.1

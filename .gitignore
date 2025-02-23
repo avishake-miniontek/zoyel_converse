@@ -1,4 +1,7 @@
-config.json
+# Ignore root, client, and server config files but not tool configs
+/config.json
+/client/config.json
+/server/config.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

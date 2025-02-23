@@ -1,0 +1,15 @@
+{
+  "settings": {
+    "default_location": {
+      "city": "Chicago",
+      "state": "IL",
+      "country": "US"
+    },
+    "units": {
+      "temperature": "fahrenheit",
+      "wind_speed": "mph",
+      "precipitation": "inch"
+    },
+    "forecast_days": 7
+  }
+}

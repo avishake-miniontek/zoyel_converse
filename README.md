@@ -96,7 +96,7 @@ The project uses Poetry for dependency management, which handles installing all 
    
    # In client directory
    cd ../client/
-   poetry install  # This installs all dependencies in an isolated environment
+   poetry install  # This installs all dependencies in an isolated environment (if this hangs, like it does on the raspbery pi, try: export PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring and then run it again)
    cp .env.example .env
    cp default_config.json config.json
    ```

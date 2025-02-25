@@ -43,15 +43,27 @@ class AudioInterface:
         self.output_device_queue = queue.Queue()
 
         # --------------------------------------------------------------------
-        # NEW: We'll store the last N speech states in a list for a rolling
-        #      timeline. For instance, 50 items ~ last 5 seconds if we update
-        #      10 times/sec. Adjust as needed.
+        # We'll store the last N speech states in a list for a rolling
+        # timeline. For instance, 50 items ~ last 5 seconds if we update
+        # 10 times/sec. Adjust as needed.
         # --------------------------------------------------------------------
         self.max_points = 50
         self.speech_history = [False] * self.max_points
 
         # We also store a queue for new speech states from the main thread.
         self.speech_queue = queue.Queue()
+        
+        # For performance optimization
+        self.speech_history_changed = True  # Flag to track if redraw is needed
+        self.bar_rectangles = []  # Store rectangle objects to avoid recreating them
+        self.bg_rect = None  # Background rectangle
+        
+        # For continuous scrolling visualization
+        self.current_speech_state = False  # Current speech state
+        self.scroll_step = 2  # Pixels to scroll per update
+        self.update_counter = 0  # Counter for adding new rectangles
+        self.rect_width = 10  # Width of each rectangle
+        self.visualization_initialized = False  # Flag to track if we've filled the display initially
 
         # Attempt to build the GUI
         try:
@@ -141,10 +153,23 @@ class AudioInterface:
         # Create Canvas that fills the frame
         self.canvas_width = 560  # Window width (600) minus padding (2*10 + 2*5)
         self.canvas_height = 60  # Increased height for better visibility
-        self.speech_canvas = tk.Canvas(display_frame,
-                                       width=self.canvas_width,
-                                       height=self.canvas_height,
-                                       bg="#f0f0f0")  # Light gray background
+        
+        # Use double buffering if available (helps with flicker on macOS)
+        canvas_options = {
+            'width': self.canvas_width,
+            'height': self.canvas_height,
+            'bg': "#f0f0f0",  # Light gray background
+        }
+        
+        # Try to enable double buffering if supported
+        try:
+            if tk.TkVersion >= 8.6:
+                canvas_options['highlightthickness'] = 0
+                canvas_options['bd'] = 0
+        except Exception:
+            pass
+            
+        self.speech_canvas = tk.Canvas(display_frame, **canvas_options)
         self.speech_canvas.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
 
         # Optional label that says "SPEAKING" or "SILENT"
@@ -221,13 +246,15 @@ class AudioInterface:
                 # Process speech state updates
                 self._process_speech_updates()
 
-                # Redraw the speech detection graph
-                self._redraw_speech_graph()
+                # Always update the scrolling visualization
+                self._update_scrolling_graph()
 
-                # Update window
+                # Update window - use update_idletasks which is more efficient
                 self.root.update_idletasks()
-                # Schedule next update (~10 Hz or 100ms)
-                self.root.after(100, self._schedule_updates)
+                
+                # Schedule next update at a balanced frequency (20Hz)
+                # This is a good compromise between smoothness and performance
+                self.root.after(50, self._schedule_updates)  # 20fps
             except Exception as e:
                 print(f"Error in window update: {e}")
 
@@ -272,63 +299,154 @@ class AudioInterface:
             pass
 
     def _process_speech_updates(self):
-        """Consume new is_speech states from the queue and update self.speech_history."""
+        """
+        Consume new is_speech states from the queue and update current speech state.
+        Optimized for performance by batching updates and minimizing GUI operations.
+        """
         try:
-            while True:
-                is_speech = self.speech_queue.get_nowait()
-                # Remove the oldest and append the newest state
-                self.speech_history.pop(0)
-                self.speech_history.append(is_speech)
-                self.speech_queue.task_done()
-
-                # Update the status label accordingly
-                if is_speech:
+            # Get all items from the queue (up to a reasonable limit)
+            items = []
+            for _ in range(5):  # Process up to 5 items at once
+                try:
+                    items.append(self.speech_queue.get_nowait())
+                    self.speech_queue.task_done()
+                except queue.Empty:
+                    break
+            
+            # If we have items to process, use the most recent state
+            if items:
+                # Use the most recent state
+                last_speech_state = items[-1]
+                self.current_speech_state = last_speech_state
+                
+                # Update the status label
+                if last_speech_state:
                     self.status_label.config(text="SPEAKING", foreground="#2ecc71")  # Soft green
                 else:
                     self.status_label.config(text="SILENT", foreground="#4a90e2")  # Soft blue
-
-        except queue.Empty:
+        except Exception as e:
+            # Fail silently - GUI performance is more important than perfect accuracy
             pass
 
-    def _redraw_speech_graph(self):
+    def _update_scrolling_graph(self):
         """
-        Draw a simple rolling timeline of speech states in the Canvas.
-        Each bar is a small rectangle with a slight gap between bars.
-        Using softer colors: green for speech, light blue for silence.
-        """
-        self.speech_canvas.delete("all")  # clear existing
-        # Calculate bar width with a small gap between bars
-        gap = 2  # 2 pixels between bars
-        bar_width = (self.canvas_width - (gap * (self.max_points - 1))) / self.max_points
-        height = self.canvas_height
+        Update the scrolling speech detection visualization.
+        This creates a continuous scrolling effect where new speech detection
+        appears on the right and moves left over time.
         
-        # Add a background rectangle for better visibility
-        self.speech_canvas.create_rectangle(
-            0, 0, self.canvas_width, height,
-            fill="#f8f9fa",  # Light background
-            outline=""
-        )
-
-        for i, val in enumerate(self.speech_history):
-            x1 = i * (bar_width + gap)
-            x2 = x1 + bar_width
+        Optimized for macOS performance.
+        """
+        try:
+            height = self.canvas_height
             y1 = 2  # Small top margin
             y2 = height - 2  # Small bottom margin
-
-            if val:
-                color = "#2ecc71"  # Soft green for speech
-                self.speech_canvas.create_rectangle(
-                    x1, y1, x2, y2,
-                    fill=color,
-                    outline="#27ae60"  # Slightly darker outline
+            
+            # Create background rectangle if it doesn't exist
+            if self.bg_rect is None:
+                self.bg_rect = self.speech_canvas.create_rectangle(
+                    0, 0, self.canvas_width, height,
+                    fill="#f0f0f0",  # Light background
+                    outline=""
                 )
-            else:
-                color = "#bdc3c7"  # Soft gray-blue for silence
-                self.speech_canvas.create_rectangle(
+            
+            # Initialize the visualization by filling it with gray rectangles
+            if not self.visualization_initialized:
+                self._initialize_visualization(y1, y2)
+                self.visualization_initialized = True
+            
+            # Batch operations for better performance
+            # First collect all operations we need to do
+            move_operations = []
+            recycle_operations = []
+            
+            # Move all existing rectangles to the left
+            for rect in self.bar_rectangles:
+                # Get current coordinates
+                try:
+                    coords = self.speech_canvas.coords(rect)
+                    if not coords or len(coords) < 4:
+                        continue  # Skip invalid rectangles
+                        
+                    x1, _, x2, _ = coords
+                    
+                    # If rectangle is off-screen, mark for recycling
+                    if x2 < 0:
+                        recycle_operations.append(rect)
+                    else:
+                        # Otherwise move it left
+                        move_operations.append(rect)
+                except Exception:
+                    # Skip any problematic rectangles
+                    continue
+            
+            # Execute move operations in a batch
+            for rect in move_operations:
+                self.speech_canvas.move(rect, -self.scroll_step, 0)
+            
+            # Add a new rectangle on the right edge every few frames
+            self.update_counter += 1
+            if self.update_counter >= 3:  # Add new rectangle every 3 frames
+                self.update_counter = 0
+                
+                # Determine color based on current speech state
+                if self.current_speech_state:
+                    fill_color = "#2ecc71"  # Soft green for speech
+                else:
+                    fill_color = "#bdc3c7"  # Soft gray-blue for silence
+                
+                # Try to reuse an off-screen rectangle
+                if recycle_operations:
+                    reused_rect = recycle_operations[0]
+                    # Reuse an existing rectangle
+                    self.speech_canvas.coords(
+                        reused_rect,
+                        self.canvas_width - self.rect_width, y1,
+                        self.canvas_width, y2
+                    )
+                    self.speech_canvas.itemconfig(
+                        reused_rect,
+                        fill=fill_color,
+                        outline=""  # No outline to remove lines between rectangles
+                    )
+                else:
+                    # Create a new rectangle only if needed
+                    # Limit the total number of rectangles to avoid memory issues
+                    if len(self.bar_rectangles) < 200:  # Reasonable upper limit
+                        new_rect = self.speech_canvas.create_rectangle(
+                            self.canvas_width - self.rect_width, y1,
+                            self.canvas_width, y2,
+                            fill=fill_color,
+                            outline=""  # No outline to remove lines between rectangles
+                        )
+                        self.bar_rectangles.append(new_rect)
+        except Exception as e:
+            # Fail silently - GUI performance is more important than perfect accuracy
+            pass
+            
+    def _initialize_visualization(self, y1, y2):
+        """
+        Pre-fill the visualization with gray rectangles at startup.
+        This ensures we don't see white space at the beginning.
+        """
+        try:
+            # Calculate how many rectangles we need to fill the width
+            num_rects = int(self.canvas_width / self.rect_width) + 1
+            
+            # Create rectangles to fill the entire width
+            for i in range(num_rects):
+                x1 = i * self.rect_width
+                x2 = x1 + self.rect_width
+                
+                # Create a gray rectangle (silence)
+                rect = self.speech_canvas.create_rectangle(
                     x1, y1, x2, y2,
-                    fill=color,
-                    outline="#95a5a6"  # Slightly darker outline
+                    fill="#bdc3c7",  # Soft gray-blue for silence
+                    outline=""  # No outline to remove lines between rectangles
                 )
+                self.bar_rectangles.append(rect)
+        except Exception as e:
+            # Fail silently - GUI performance is more important than perfect accuracy
+            pass
 
     def _on_closing(self):
         """Handle window close."""
@@ -381,8 +499,29 @@ class AudioInterface:
         Thread-safe method to queue the latest speech state.
         The main logic calls this every time we have a new chunk
         or a new VAD decision.
+        
+        Optimized to reduce unnecessary updates.
         """
-        self.speech_queue.put(is_speech)
+        # Skip redundant updates to reduce GUI load
+        try:
+            # Only queue if different from current state to reduce updates
+            if is_speech != self.current_speech_state:
+                # Check if queue is getting too large (more than 5 items)
+                # If so, clear it to avoid lag
+                if self.speech_queue.qsize() > 5:
+                    # Clear the queue except for the most recent state
+                    while not self.speech_queue.empty():
+                        try:
+                            self.speech_queue.get_nowait()
+                            self.speech_queue.task_done()
+                        except queue.Empty:
+                            break
+                
+                # Add the new state
+                self.speech_queue.put(is_speech)
+        except Exception as e:
+            # Fail silently - GUI performance is more important than perfect accuracy
+            pass
 
     def get_text_input(self):
         """

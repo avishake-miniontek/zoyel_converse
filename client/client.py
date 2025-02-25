@@ -72,12 +72,24 @@ def patched_json_load(f, *args_, **kwargs):
         if getattr(args, 'input_device', None):
             if 'audio_devices' not in data:
                 data['audio_devices'] = {}
-            data['audio_devices']['input_device'] = args.input_device
+            # Try to convert to int if it's a numeric string
+            input_device = args.input_device
+            try:
+                input_device = int(input_device)
+            except ValueError:
+                pass  # Keep as string if not a number
+            data['audio_devices']['input_device'] = input_device
         # Override output device if provided on the CLI.
         if getattr(args, 'output_device', None):
             if 'audio_devices' not in data:
                 data['audio_devices'] = {}
-            data['audio_devices']['output_device'] = args.output_device
+            # Try to convert to int if it's a numeric string
+            output_device = args.output_device
+            try:
+                output_device = int(output_device)
+            except ValueError:
+                pass  # Keep as string if not a number
+            data['audio_devices']['output_device'] = output_device
     return data
 
 json.load = patched_json_load
@@ -360,6 +372,10 @@ class AsyncThread(threading.Thread):
     async def connect_to_server(self):
         """Connect to the WebSocket server and wait for authentication."""
         try:
+            # Log the server URI before connecting
+            logger.info(f"Attempting to connect to server at: {SERVER_URI}")
+            logger.info(f"Server host: {SERVER_HOST}, port: {SERVER_PORT}")
+            
             self.websocket = await websockets.connect(
                 SERVER_URI,
                 ping_interval=20,    # Send ping every 20 seconds

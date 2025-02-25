@@ -15,6 +15,7 @@ class BaseTool:
         self.args = []  # List of argument names in order
         self.config = {}
         self.llm_response = True  # Default to using LLM processing
+        self.needs_translation = True  # Whether tool output needs translation for non-English languages
         self.result_prompt = ""  # Prompt for formatting LLM responses
         self._load_config()
     

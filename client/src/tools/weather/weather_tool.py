@@ -27,9 +27,14 @@ class WeatherTool(BaseTool):
         self.description = "Get weather information for a location"
         self.args = ["city", "state", "country"]
         self.llm_response = False  # Weather tool returns formatted text directly
+        self.needs_translation = True  # Enable translation for non-English languages
     
-    async def _get_coordinates(self, city: str, state: str = None, country: str = None) -> Tuple[float, float]:
-        """Get coordinates for a location using Open-Meteo Geocoding API."""
+    async def _get_coordinates(self, city: str, state: str = None, country: str = None) -> Tuple[float, float, dict]:
+        """Get coordinates for a location using Open-Meteo Geocoding API.
+        
+        Returns:
+            Tuple containing latitude, longitude, and location details dictionary
+        """
         timeout = aiohttp.ClientTimeout(total=10)
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -49,19 +54,44 @@ class WeatherTool(BaseTool):
                         raise ValueError(f"Could not find location: {city}")
                     
                     results = data["results"]
+                    original_results = results.copy()
                     
+                    # Prioritize country matches if country is provided, but don't require them
                     if country:
-                        results = [r for r in results if r.get("country_code") == country.upper()]
-                        if not results:
-                            raise ValueError(f"No locations found in {country}")
+                        country_results = [r for r in results if r.get("country_code") == country.upper()]
+                        if country_results:
+                            logger.debug(f"Found {len(country_results)} results matching country {country}")
+                            results = country_results
+                        else:
+                            logger.debug(f"No results found for country {country}, using best city match instead")
                     
+                    # Prioritize state matches if state is provided, but don't require them
                     if state:
                         state_results = [r for r in results if r.get("admin1", "").upper() == state.upper()]
                         if state_results:
+                            logger.debug(f"Found {len(state_results)} results matching state {state}")
                             results = state_results
+                        else:
+                            logger.debug(f"No results found for state {state}, using best available match instead")
+                    
+                    # If we filtered too aggressively and have no results, fall back to original results
+                    if not results and original_results:
+                        logger.debug("Filtered too aggressively, falling back to original results")
+                        results = original_results
                     
                     result = results[0]
-                    return result["latitude"], result["longitude"]
+                    location_details = {
+                        "city": result.get("name", city),
+                        "state": result.get("admin1"),
+                        "country": result.get("country"),
+                        "country_code": result.get("country_code")
+                    }
+                    
+                    logger.debug(f"Selected location: {location_details['city']}, " +
+                                f"{location_details['state'] or 'N/A'}, " +
+                                f"{location_details['country'] or 'N/A'}")
+                    
+                    return result["latitude"], result["longitude"], location_details
                     
         except aiohttp.ClientError:
             raise ValueError("Error connecting to location service. Please try again.")
@@ -111,8 +141,8 @@ class WeatherTool(BaseTool):
                 if value and i < len(self.args):  # Only include non-empty args
                     arg_dict[self.args[i]] = value
 
-            # Get coordinates
-            lat, lon = await self._get_coordinates(
+            # Get coordinates and location details
+            lat, lon, location_details = await self._get_coordinates(
                 arg_dict["city"],
                 arg_dict.get("state"),
                 arg_dict.get("country")
@@ -155,8 +185,15 @@ class WeatherTool(BaseTool):
                     units = self.config["settings"]["units"]
                     wind_speed_unit = "miles per hour" if units["wind_speed"] == "mph" else "kilometers per hour"
                     
+                    # Format location string based on available details
+                    location_str = location_details['city']
+                    if location_details.get('state'):
+                        location_str += f", {location_details['state']}"
+                    if location_details.get('country'):
+                        location_str += f", {location_details['country']}"
+                    
                     return (
-                        f"In {arg_dict['city']}, the current temperature is {round(current['temperature_2m'])} degrees {units['temperature']} "
+                        f"In {location_str}, the current temperature is {round(current['temperature_2m'])} degrees {units['temperature']} "
                         f"with {conditions}. The wind speed is {round(current['wind_speed_10m'])} {wind_speed_unit}. "
                         f"Today's high will be {round(daily['temperature_2m_max'][0])} degrees {units['temperature']} "
                         f"and the low will be {round(daily['temperature_2m_min'][0])} degrees {units['temperature']}. "

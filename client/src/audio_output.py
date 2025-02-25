@@ -120,17 +120,36 @@ class AudioOutput:
                 device_idx = int(output_device)
                 for i, dev in output_devices:
                     if i == device_idx:
-                        logger.info(f"\n[AUDIO] Selected configured device: {dev['name']}")
+                        logger.info(f"\n[AUDIO] Selected configured device by index: {dev['name']}")
+                        self.current_device = dev
+                        return i, dev
+            elif isinstance(output_device, str):
+                # Try to find device by name
+                logger.info(f"\n[AUDIO] Looking for output device by name: {output_device}")
+                for i, dev in output_devices:
+                    if output_device.lower() in dev['name'].lower():
+                        logger.info(f"\n[AUDIO] Selected configured device by name: {dev['name']}")
                         self.current_device = dev
                         return i, dev
         
-        # 2. Check for device specified by name
+        # 2. Check for device specified by name or index
         if device_name:
-            for i, dev in output_devices:
-                if dev['name'] == device_name:
-                    logger.info(f"\n[AUDIO] Selected specified device: {dev['name']}")
-                    self.current_device = dev
-                    return i, dev
+            # Try to convert to int if it's a numeric string
+            try:
+                device_idx = int(device_name)
+                for i, dev in output_devices:
+                    if i == device_idx:
+                        logger.info(f"\n[AUDIO] Selected specified device by index: {dev['name']}")
+                        self.current_device = dev
+                        return i, dev
+            except ValueError:
+                # It's a string, try to find by name (partial match)
+                logger.info(f"\n[AUDIO] Looking for specified device by name: {device_name}")
+                for i, dev in output_devices:
+                    if device_name.lower() in dev['name'].lower():
+                        logger.info(f"\n[AUDIO] Selected specified device by name: {dev['name']}")
+                        self.current_device = dev
+                        return i, dev
         
         system = platform.system().lower()
         if system == 'linux':
@@ -176,16 +195,16 @@ class AudioOutput:
             return self.current_device['name']
         return "No device selected"
 
-    def set_device_by_name(self, device_name):
+    def set_device_by_name(self, device_identifier):
         """
-        Switch to a new device by name, re-initializing the stream if needed.
+        Switch to a new device by name or index, re-initializing the stream if needed.
         """
-        logger.info(f"[AUDIO] Switching to device: {device_name}")
+        logger.info(f"[AUDIO] Switching to device: {device_identifier}")
         self.pause()
         if self.stream:
             self.stream.close()
             self.stream = None
-        self.initialize_sync(device_name=device_name)
+        self.initialize_sync(device_name=device_identifier)
         if self.playing:
             asyncio.run(self.start_stream())
 

@@ -102,11 +102,20 @@ class AudioCore:
                 input_device = self.config['audio_devices']['input_device']
                 if isinstance(input_device, (int, float)):
                     device_idx = int(input_device)
-                    logger.info(f"       Using input device: {device_idx}")
+                    logger.info(f"       Using input device by index: {device_idx}")
                     if 0 <= device_idx < len(devices):
                         device_info = devices[device_idx]
                         working_device = device_idx
                         logger.info(f"          assigned to working_device")
+                elif isinstance(input_device, str):
+                    # Try to find device by name
+                    logger.info(f"       Looking for input device by name: {input_device}")
+                    for i, device in enumerate(devices):
+                        if device['max_input_channels'] > 0 and input_device.lower() in device['name'].lower():
+                            working_device = i
+                            device_info = device
+                            logger.info(f"          found matching device: {device['name']}")
+                            break
             else:
                 for i, device in enumerate(devices):
                     if device['max_input_channels'] > 0:

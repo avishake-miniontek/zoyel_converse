@@ -77,22 +77,82 @@ class ToolRegistry:
         logger.info("[Tool Discovery] Completed tool discovery")
         logger.info("[Tool Discovery] Registered tools: %s", list(self.tools.keys()))
     
-    def get_tool_prompt(self) -> str:
-        """Get prompt showing available tools."""
-        lines = ["Available tools:\n"]
+    def get_tool_prompt(self, language: str = "en") -> str:
+        """
+        Get prompt showing available tools in the specified language.
+        Tool names and syntax remain in English for consistency.
+        """
+        # Tool documentation translations
+        translations = {
+            "en": {
+                "available_tools": "Available tools:",
+                "to_use_tool": "To use a tool:",
+                "intro_step": "1. Write a brief intro like \"Let me check that for you\"",
+                "call_step": "2. Call the tool with <tool></tool> tags",
+                "stop_step": "3. STOP - do not write anything after the tool call",
+                "response_step": "4. The response will come in a new message",
+                "example": "Example:",
+                "user_example": "User: What's the weather in Chicago?",
+                "assistant_example": "Assistant: Let me check that for you.",
+                "optional_arg": "?"  # Suffix for optional arguments
+            },
+            "es": {
+                "available_tools": "Herramientas disponibles:",
+                "to_use_tool": "Para usar una herramienta:",
+                "intro_step": "1. Escribe una breve introducción como \"Déjame verificar eso para ti\"",
+                "call_step": "2. Llama a la herramienta con etiquetas <tool></tool>",
+                "stop_step": "3. DETENTE - no escribas nada después de la llamada a la herramienta",
+                "response_step": "4. La respuesta vendrá en un nuevo mensaje",
+                "example": "Ejemplo:",
+                "user_example": "Usuario: ¿Cómo está el clima en Madrid?",
+                "assistant_example": "Asistente: Déjame verificar eso para ti.",
+                "optional_arg": "?"
+            },
+            "fr": {
+                "available_tools": "Outils disponibles:",
+                "to_use_tool": "Pour utiliser un outil:",
+                "intro_step": "1. Écris une brève introduction comme \"Je vais vérifier cela pour toi\"",
+                "call_step": "2. Appelle l'outil avec les balises <tool></tool>",
+                "stop_step": "3. ARRÊTE - n'écris rien après l'appel de l'outil",
+                "response_step": "4. La réponse viendra dans un nouveau message",
+                "example": "Exemple:",
+                "user_example": "Utilisateur: Quel temps fait-il à Paris?",
+                "assistant_example": "Assistant: Je vais vérifier cela pour toi.",
+                "optional_arg": "?"
+            }
+        }
+        
+        # Default to English if language not supported
+        lang_dict = translations.get(language, translations["en"])
+        
+        lines = [f"{lang_dict['available_tools']}\n"]
+        
+        # Tool definitions remain in English for consistency
         for tool in self.tools.values():
-            args = ", ".join(f"{arg}?" if i > 0 else arg 
+            args = ", ".join(f"{arg}{lang_dict['optional_arg']}" if i > 0 else arg 
                            for i, arg in enumerate(tool.args))
             lines.append(f"{tool.name}({args}) - {tool.description}")
-        lines.append("\nTo use a tool:")
-        lines.append("1. Write a brief intro like \"Let me check that for you\"")
-        lines.append("2. Call the tool with <tool></tool> tags")
-        lines.append("3. STOP - do not write anything after the tool call")
-        lines.append("4. The response will come in a new message")
-        lines.append("\nExample:")
-        lines.append("User: What's the weather in Chicago?")
-        lines.append("Assistant: Let me check that for you.")
-        lines.append("<tool>weather('Chicago', 'IL')</tool>")
+        
+        # Usage instructions in the target language
+        lines.append(f"\n{lang_dict['to_use_tool']}")
+        lines.append(lang_dict['intro_step'])
+        lines.append(lang_dict['call_step'])
+        lines.append(lang_dict['stop_step'])
+        lines.append(lang_dict['response_step'])
+        
+        # Example in the target language
+        lines.append(f"\n{lang_dict['example']}")
+        lines.append(lang_dict['user_example'])
+        lines.append(lang_dict['assistant_example'])
+        
+        # Tool call syntax remains in English
+        if language == "es":
+            lines.append("<tool>weather('Madrid', '', 'Spain')</tool>")
+        elif language == "fr":
+            lines.append("<tool>weather('Paris', '', 'France')</tool>")
+        else:
+            lines.append("<tool>weather('Chicago', 'IL')</tool>")
+            
         return "\n".join(lines)
 
     def get_tool(self, name: str) -> Optional[BaseTool]:

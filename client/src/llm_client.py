@@ -12,7 +12,7 @@ if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 import time
 from openai import AsyncOpenAI
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from src.token_counter import estimate_messages_tokens
 import re
 import logging
@@ -103,6 +103,192 @@ class LLMClient:
         # Initialize tool registry
         self.tool_registry = ToolRegistry()
         
+        # Load prompt based on configuration
+        self.prompt_data = self._load_prompt()
+        logger.info(f"Loaded prompt for language: {self.prompt_data.get('language_name', 'unknown')}")
+        
+    def _load_prompt(self) -> Dict[str, Any]:
+        """
+        Load the appropriate prompt based on configuration.
+        First tries to load a custom prompt if specified, then falls back to the language-specific prompt,
+        and finally defaults to English if neither is available.
+        """
+        prompt_config = self.config["llm"].get("prompt", {})
+        language = prompt_config.get("language", "en")
+        custom_path = prompt_config.get("custom_path")
+        prompts_dir = prompt_config.get("directory", "prompts")
+        
+        # Try to load custom prompt if specified
+        if custom_path:
+            try:
+                custom_prompt_path = custom_path
+                if not os.path.isabs(custom_prompt_path):
+                    # If relative path, resolve from current directory
+                    custom_prompt_path = os.path.join(os.getcwd(), custom_prompt_path)
+                
+                if os.path.exists(custom_prompt_path):
+                    logger.info(f"Loading custom prompt from: {custom_prompt_path}")
+                    with open(custom_prompt_path, 'r', encoding='utf-8') as f:
+                        prompt_data = json.load(f)
+                    return self._validate_prompt(prompt_data, "custom")
+                else:
+                    logger.warning(f"Custom prompt file not found: {custom_prompt_path}")
+            except Exception as e:
+                logger.error(f"Error loading custom prompt: {e}")
+        
+        # Try to load language-specific prompt
+        try:
+            # First check if the prompts directory exists relative to the current directory
+            base_prompts_dir = os.path.join(os.getcwd(), prompts_dir)
+            if not os.path.exists(base_prompts_dir):
+                # If not, try relative to the script directory
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                base_dir = os.path.dirname(script_dir)  # Go up one level from src/
+                base_prompts_dir = os.path.join(base_dir, prompts_dir)
+            
+            # Try to load the language-specific prompt
+            lang_prompt_path = os.path.join(base_prompts_dir, "default", f"{language}.json")
+            if os.path.exists(lang_prompt_path):
+                logger.info(f"Loading language prompt from: {lang_prompt_path}")
+                with open(lang_prompt_path, 'r', encoding='utf-8') as f:
+                    prompt_data = json.load(f)
+                return self._validate_prompt(prompt_data, language)
+            else:
+                logger.warning(f"Language prompt file not found: {lang_prompt_path}")
+        except Exception as e:
+            logger.error(f"Error loading language prompt: {e}")
+        
+        # Fall back to English if available
+        if language != "en":
+            try:
+                en_prompt_path = os.path.join(base_prompts_dir, "default", "en.json")
+                if os.path.exists(en_prompt_path):
+                    logger.info(f"Falling back to English prompt: {en_prompt_path}")
+                    with open(en_prompt_path, 'r', encoding='utf-8') as f:
+                        prompt_data = json.load(f)
+                    return self._validate_prompt(prompt_data, "en")
+            except Exception as e:
+                logger.error(f"Error loading fallback English prompt: {e}")
+        
+        # If all else fails, return a default prompt structure
+        logger.warning("Using hardcoded default prompt as fallback")
+        return {
+            "system_prompt": "You are {assistant_name}, a helpful AI assistant who communicates through voice. Keep your responses conversational and avoid using formatting that doesn't work in speech.",
+            "language": "en",
+            "language_name": "English (Default Fallback)"
+        }
+    
+    def _validate_prompt(self, prompt_data: Dict[str, Any], language: str) -> Dict[str, Any]:
+        """Validate the prompt data structure and ensure it has all required fields."""
+        required_fields = ["system_prompt"]
+        for field in required_fields:
+            if field not in prompt_data:
+                logger.warning(f"Prompt is missing required field: {field}")
+                prompt_data[field] = "You are {assistant_name}, a helpful AI assistant."
+        
+        # Ensure language fields are set
+        if "language" not in prompt_data:
+            prompt_data["language"] = language
+        if "language_name" not in prompt_data:
+            language_names = {
+                "en": "English",
+                "es": "Spanish",
+                "fr": "French",
+                "de": "German",
+                "it": "Italian",
+                "pt": "Portuguese",
+                "custom": "Custom"
+            }
+            prompt_data["language_name"] = language_names.get(language, "Unknown")
+            
+        return prompt_data
+    
+    def get_system_prompt(self) -> str:
+        """
+        Get the system prompt with variables replaced and dynamic tool documentation.
+        """
+        system_prompt = self.prompt_data.get("system_prompt", "")
+        
+        # Get current language
+        current_language = self.prompt_data.get("language", "en")
+        
+        # Replace variables in the prompt
+        system_prompt = system_prompt.replace("{assistant_name}", self.config['assistant']['name'])
+        
+        # Check if we need to replace tool documentation
+        # Look for hardcoded tool documentation in the prompt
+        tool_doc_markers = [
+            "Available tools:", 
+            "Herramientas disponibles:", 
+            "Outils disponibles:"
+        ]
+        
+        # If any tool documentation marker is found, replace the entire tool section
+        for marker in tool_doc_markers:
+            if marker in system_prompt:
+                # Generate dynamic tool documentation
+                tool_docs = self.tool_registry.get_tool_prompt(current_language)
+                
+                # Find the start of the tool documentation
+                start_idx = system_prompt.find(marker)
+                if start_idx == -1:
+                    continue
+                
+                # Find the end of the tool documentation (look for the next empty line after an example)
+                example_markers = ["<tool>", "</tool>"]
+                for example_marker in example_markers:
+                    example_idx = system_prompt.find(example_marker, start_idx)
+                    if example_idx != -1:
+                        end_idx = system_prompt.find("\n\n", example_idx)
+                        if end_idx == -1:  # If no empty line after example, use the end of the string
+                            end_idx = len(system_prompt)
+                        
+                        # Replace the tool documentation section
+                        system_prompt = system_prompt[:start_idx] + tool_docs + system_prompt[end_idx:]
+                        break
+                
+                # Only need to replace once
+                break
+        
+        return system_prompt
+    
+    async def translate_tool_response(self, text: str, target_language: str) -> str:
+        """Translate tool response to target language."""
+        if target_language == "en":
+            return text
+            
+        logger.info(f"Translating tool response to {target_language}")
+        
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a precise translator. Translate the following text to "
+                    f"{target_language}, preserving all measurements, numbers, and "
+                    "proper nouns exactly as they appear."
+                )
+            },
+            {
+                "role": "user",
+                "content": text
+            }
+        ]
+        
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.config["llm"]["model_name"],
+                messages=messages,
+                temperature=0.3  # Lower temperature for more consistent translations
+            )
+            
+            translated_text = response.choices[0].message.content
+            logger.debug(f"Translated text: {translated_text}")
+            return translated_text
+        except Exception as e:
+            logger.error(f"Translation error: {e}")
+            # Return original text if translation fails
+            return text
+        
     def _load_config(self, config_path: str) -> dict:
         """Load configuration from JSON file."""
         if not os.path.exists(config_path):
@@ -142,30 +328,9 @@ class LLMClient:
             # Update last message time
             self.last_message_time = time.time()
 
-            # Create system prompt with assistant name and tool instructions
-            system_prompt = f"""You are {self.config['assistant']['name']}, a helpful AI assistant who communicates through voice. Important instructions for your responses:
-
-1) Provide only plain text that will be converted to speech - never use markdown, asterisk *, code blocks, or special formatting.
-2) Use natural, conversational language as if you're speaking to someone.
-3) Never use bullet points, numbered lists, or special characters.
-4) Keep responses concise and clear since they will be spoken aloud.
-5) Express lists or multiple points in a natural spoken way using words like 'first', 'also', 'finally', etc.
-6) Use punctuation only for natural speech pauses (periods, commas, question marks).
-
-Available tools:
-
-weather(city, state?, country?) - Get weather information for a location
-
-To use a tool:
-1. Write a brief intro like "Let me check that for you"
-2. Call the tool with <tool></tool> tags
-3. STOP - do not write anything after the tool call
-4. The response will come in a new message
-
-Example:
-User: What's the weather in Chicago?
-Assistant: Let me check that for you.
-<tool>weather('Chicago', 'IL')</tool>"""
+            # Get system prompt from loaded prompt data
+            system_prompt = self.get_system_prompt()
+            logger.info(f"Using {self.prompt_data.get('language_name', 'unknown')} prompt")
 
             # Prepare messages with conversation history
             messages = [{"role": "system", "content": system_prompt}]
@@ -222,6 +387,9 @@ Assistant: Let me check that for you.
                             self.conversation_history.append({"role": "user", "content": transcript})
                             self.conversation_history.append({"role": "assistant", "content": full_response})
                             
+                            # Get current language from prompt data
+                            current_language = self.prompt_data.get("language", "en")
+                            
                             # Handle tool response based on llm_response flag
                             if tool.llm_response:
                                 # Use LLM to format response
@@ -240,12 +408,17 @@ Assistant: Let me check that for you.
                                 if callback:
                                     await callback(formatted_response)
                             else:
+                                # Check if translation is needed
+                                final_result = result
+                                if tool.needs_translation and current_language != "en":
+                                    final_result = await self.translate_tool_response(result, current_language)
+                                
                                 # Use direct response
                                 self.conversation_history.append(
-                                    {"role": "assistant", "content": result}
+                                    {"role": "assistant", "content": final_result}
                                 )
                                 if callback:
-                                    await callback(result)
+                                    await callback(final_result)
                             
                             # Clear buffer and return since we've handled the tool call
                             buffer = ""

@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  server:
+    build: ./server
+    image: mira-converse-server
+    container_name: mira-server
+    restart: unless-stopped
+    ports:
+      - "${WEBSOCKET_PORT:-8765}:8765"
+    environment:
+      - WEBSOCKET_HOST=0.0.0.0
+      - WEBSOCKET_PORT=${WEBSOCKET_PORT:-8765}
+      - WEBSOCKET_API_SECRET_KEY=${WEBSOCKET_API_SECRET_KEY:-mira}
+      - WHISPER_PATH=/models/whisper
+      - KOKORO_PATH=/models/kokoro
+      - KOKORO_VOICE_NAME=${KOKORO_VOICE_NAME:-af_heart}
+      - KOKORO_LANGUAGE_CODE=${KOKORO_LANGUAGE_CODE:-a}
+    volumes:
+      - ${WHISPER_MODEL_PATH:-./models/whisper}:/models/whisper
+      - ${KOKORO_MODEL_PATH:-./models/kokoro}:/models/kokoro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  client:
+    build: ./client
+    image: mira-converse-client
+    container_name: mira-client
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      - WEBSOCKET_HOST=server
+      - WEBSOCKET_PORT=${WEBSOCKET_PORT:-8765}
+      - WEBSOCKET_API_SECRET_KEY=${WEBSOCKET_API_SECRET_KEY:-mira}
+      - MODEL_NAME=${MODEL_NAME:-gpt-3.5-turbo}
+      - API_SECRET_KEY=${API_SECRET_KEY}
+      - API_BASE=${API_BASE:-https://api.openai.com/v1}
+      - DISPLAY=${DISPLAY}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    devices:
+      - /dev/snd:/dev/snd
+    network_mode: "host"  # For audio and display access

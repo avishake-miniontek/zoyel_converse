@@ -15,7 +15,7 @@
         "api_base": "use API_BASE in .env",
         "api_key": "use API_SECRET_KEY in .env",
         "prompt": {
-            "language": "es",
+            "language": "en",
             "custom_path": null,
             "directory": "prompts"
         },

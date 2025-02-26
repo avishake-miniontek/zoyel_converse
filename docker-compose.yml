@@ -15,7 +15,6 @@ services:
       - WHISPER_PATH=/models/whisper
       - KOKORO_PATH=/models/kokoro
       - KOKORO_VOICE_NAME=${KOKORO_VOICE_NAME:-af_heart}
-      - KOKORO_LANGUAGE_CODE=${KOKORO_LANGUAGE_CODE:-a}
     volumes:
       - ${WHISPER_MODEL_PATH:-./models/whisper}:/models/whisper
       - ${KOKORO_MODEL_PATH:-./models/kokoro}:/models/kokoro

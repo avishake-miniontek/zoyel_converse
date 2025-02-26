@@ -29,7 +29,6 @@ KOKORO_MODEL_PATH=/path/to/kokoro/model
 
 # TTS Configuration
 KOKORO_VOICE_NAME=af_heart
-KOKORO_LANGUAGE_CODE=a
 
 # LLM Configuration
 MODEL_NAME=gpt-3.5-turbo

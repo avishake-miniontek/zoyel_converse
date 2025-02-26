@@ -16,6 +16,41 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Language code mapping dictionary to convert ISO 2-char codes to Kokoro 1-char codes
+LANGUAGE_CODE_MAPPING = {
+    "en": "a",  # American English
+    "en-gb": "b",  # British English
+    "es": "e",  # Spanish
+    "fr": "f",  # French
+    "hi": "h",  # Hindi
+    "it": "i",  # Italian
+    "ja": "j",  # Japanese
+    "pt": "p",  # Brazilian Portuguese
+    "zh": "z",  # Mandarin Chinese
+}
+
+def map_language_code(iso_code):
+    """
+    Maps ISO 2-character language codes to Kokoro 1-character codes.
+    Falls back to 'a' (American English) if no mapping found.
+    """
+    if not iso_code:
+        return "a"  # Default to American English
+    
+    # Check if we have an exact match
+    if iso_code in LANGUAGE_CODE_MAPPING:
+        return LANGUAGE_CODE_MAPPING[iso_code]
+    
+    # Try case-insensitive match
+    iso_code_lower = iso_code.lower()
+    for key, value in LANGUAGE_CODE_MAPPING.items():
+        if key.lower() == iso_code_lower:
+            return value
+    
+    # Fall back to American English
+    logger.warning(f"Unknown language code '{iso_code}', defaulting to American English")
+    return "a"
+
 class ServerAudioCore:
     def __init__(self):
         # Load configuration from config.json

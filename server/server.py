@@ -59,12 +59,75 @@ def select_gpu():
 has_gpu = select_gpu()
 
 import torch
+import gc
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from kokoro import KPipeline
 
 # Import our modules
-from src.server_audio_core import ServerAudioCore
+from src.server_audio_core import ServerAudioCore, map_language_code
 from src import audio_utils
+
+# Pipeline manager for handling multiple language pipelines
+class KokoroPipelineManager:
+    def __init__(self, max_pipelines=3, device="cuda:0"):
+        self.pipelines = {}  # Map of language codes to pipelines
+        self.last_used = {}  # Map of language codes to last usage timestamp
+        self.max_pipelines = max_pipelines
+        self.device = device
+        self.default_lang_code = "en"  # Default language (ISO code)
+        print(f"Initialized KokoroPipelineManager with max_pipelines={max_pipelines}")
+        
+    def get_pipeline(self, iso_lang_code):
+        """Get or create a pipeline for the specified language."""
+        # Update last used timestamp for this language
+        current_time = time.time()
+        self.last_used[iso_lang_code] = current_time
+        
+        if iso_lang_code in self.pipelines:
+            print(f"Using existing pipeline for language {iso_lang_code}")
+        else:
+            # Check if we need to evict a pipeline
+            self._cleanup_if_needed()
+            
+            # Convert ISO code to Kokoro code
+            kokoro_lang_code = map_language_code(iso_lang_code)
+            print(f"Creating new Kokoro pipeline for language: {iso_lang_code} (Kokoro code: {kokoro_lang_code})")
+            print(f"Pipeline cache status: {len(self.pipelines)}/{self.max_pipelines} pipelines in use")
+            
+            # Initialize new pipeline
+            pipeline = KPipeline(lang_code=kokoro_lang_code)
+            pipeline.model = pipeline.model.to(device=self.device, dtype=torch.float32)
+            
+            # Store in cache
+            self.pipelines[iso_lang_code] = pipeline
+            
+        return self.pipelines[iso_lang_code]
+    
+    def _cleanup_if_needed(self):
+        """Remove least recently used pipeline if we exceed the maximum."""
+        if len(self.pipelines) < self.max_pipelines:
+            return
+            
+        # Find the least recently used language
+        lru_lang = min(self.last_used.items(), key=lambda x: x[1])[0]
+        
+        # Remove it from our collections
+        if lru_lang in self.pipelines:
+            print(f"Evicting pipeline for language {lru_lang} (least recently used)")
+            
+            # Explicitly move model to CPU before deletion to free GPU memory
+            try:
+                self.pipelines[lru_lang].model = self.pipelines[lru_lang].model.to("cpu")
+                # Force garbage collection
+                del self.pipelines[lru_lang]
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print(f"Successfully freed resources for {lru_lang} pipeline")
+            except Exception as e:
+                print(f"Error while freeing pipeline resources: {e}")
+                # Still remove from dictionary even if cleanup fails
+                del self.pipelines[lru_lang]
 
 # Load configuration
 with open('config.json', 'r') as f:
@@ -88,8 +151,56 @@ if not os.path.exists(kokoro_path):
     print(f"Error: Kokoro model path does not exist: {kokoro_path}")
     sys.exit(1)
 
-# Trigger word
-TRIGGER_WORD = CONFIG['assistant']['name'].lower()
+# Define Mira alternatives for trigger word detection (excluding 'mira' since it's handled by exact match)
+MIRA_ALTERNATIVES = frozenset(['nira', 'neera', 'miro', 'munira', 'miura', 'mihiro'])
+
+def find_trigger_word(msg: str, trigger: str) -> tuple[bool, str, str]:
+    """
+    Find the trigger word and return both the trigger portion and everything after it.
+    
+    This function handles both exact matches and alternative spellings of the trigger word.
+    For example, if the trigger word is "mira", it will also detect variants like "nira", 
+    "neera", etc. - improving the assistant's responsiveness to mispronunciations.
+    
+    Args:
+        msg (str): The transcribed message to search in
+        trigger (str): The trigger word to search for
+        
+    Returns:
+        tuple[bool, str, str]: A tuple containing:
+            - found (bool): True if trigger or alternative was found
+            - trigger_portion (str): The actual trigger word as it appeared in the text
+            - text_after_trigger (str): The text after the trigger word
+    """
+    msg_lower = msg.lower()
+    trigger_lower = trigger.lower()
+    pos = msg_lower.find(trigger_lower)
+    trigger_len = None
+    
+    # If exact trigger not found and trigger is "mira", try alternatives
+    if pos == -1 and trigger_lower == "mira":
+        for alt in MIRA_ALTERNATIVES:
+            alt_lower = alt.lower()
+            alt_pos = msg_lower.find(alt_lower)
+            if alt_pos != -1:
+                # Found alternative, use its position and length
+                pos = alt_pos
+                trigger_len = len(alt)
+                break
+    
+    if pos != -1:
+        # Match found (either exact trigger or alternative)
+        if trigger_len is None:  # No alternative was used
+            trigger_len = len(trigger)
+        # Extract both parts: the trigger portion and everything after
+        trigger_portion = msg[pos:pos + trigger_len]
+        text_after = msg[pos + trigger_len:].strip()
+        return True, trigger_portion, text_after
+    
+    return False, "", ""
+
+# Default trigger word from config
+DEFAULT_TRIGGER_WORD = CONFIG['assistant']['name'].lower()
 
 device = "cuda:0" if has_gpu else "cpu"
 torch_dtype = torch.float16 if has_gpu else torch.float32
@@ -152,10 +263,19 @@ except Exception as e:
 
 print("Loading Kokoro TTS model...")
 voice_name = CONFIG['server']['models']['kokoro']['voice_name']
-lang_code = CONFIG['server']['models']['kokoro'].get('language_code', 'a')  # Default to 'a' if not specified
-print(f"Using voice name: {voice_name}, language code: {lang_code}")
-tts_pipeline = KPipeline(lang_code=lang_code)  # Initialize TTS pipeline without batch_size
-tts_pipeline.model = tts_pipeline.model.to(device=device, dtype=torch.float32)
+
+# Get the 2-char language code from configuration and map it to Kokoro's 1-char code
+iso_lang_code = CONFIG['server']['models']['kokoro'].get('language_code', 'en')
+kokoro_lang_code = map_language_code(iso_lang_code)
+
+print(f"Using voice name: {voice_name}, language code: {iso_lang_code} (Kokoro code: {kokoro_lang_code})")
+
+# Initialize the pipeline manager with max_pipelines from config
+max_pipelines = CONFIG['server']['models']['kokoro'].get('max_pipelines', 3)
+pipeline_manager = KokoroPipelineManager(max_pipelines=max_pipelines, device=device)
+
+# Initialize default pipeline
+tts_pipeline = pipeline_manager.get_pipeline(iso_lang_code)
 
 # Batch processing configuration
 ASR_BATCH_TIMEOUT = 0.3  # Process ASR batch after 300ms of no new data
@@ -244,12 +364,36 @@ class ClientSettingsManager:
     def __init__(self):
         self.client_settings = {}
         self.client_buffer_times = {}  # Track last update time for each client's buffer
+        self.client_languages = {}  # Store language code for each client
+        self.client_trigger_words = {}  # Store trigger word for each client
 
     def get_audio_server(self, client_id):
         if client_id not in self.client_settings:
             print(f"Creating new AudioServer for client {client_id}")
             self.client_settings[client_id] = AudioServer()
         return self.client_settings[client_id]
+        
+    def set_client_language(self, client_id, language_code):
+        """Set the language code for a client."""
+        if not language_code:
+            language_code = "en"  # Default to English
+        self.client_languages[client_id] = language_code
+        print(f"Set language for client {client_id} to {language_code}")
+        
+    def get_client_language(self, client_id):
+        """Get the language code for a client."""
+        return self.client_languages.get(client_id, "en")  # Default to English
+        
+    def set_client_trigger_word(self, client_id, trigger_word):
+        """Set the trigger word for a client."""
+        if not trigger_word:
+            trigger_word = DEFAULT_TRIGGER_WORD  # Default to config value
+        self.client_trigger_words[client_id] = trigger_word.lower()
+        print(f"Set trigger word for client {client_id} to '{trigger_word}'")
+        
+    def get_client_trigger_word(self, client_id):
+        """Get the trigger word for a client."""
+        return self.client_trigger_words.get(client_id, DEFAULT_TRIGGER_WORD)  # Default to config value
 
     def remove_client(self, client_id):
         if client_id in self.client_settings:
@@ -257,6 +401,10 @@ class ClientSettingsManager:
             del self.client_settings[client_id]
         if client_id in self.client_buffer_times:
             del self.client_buffer_times[client_id]
+        if client_id in self.client_languages:
+            del self.client_languages[client_id]
+        if client_id in self.client_trigger_words:
+            del self.client_trigger_words[client_id]
 
 client_settings_manager = ClientSettingsManager()
 
@@ -319,12 +467,18 @@ async def process_tts_batch(server, force=False):
     try:
         # Process each TTS request sequentially
         while server.tts_batch:
-            text, websocket = server.tts_batch.pop(0)
-            print(f"[TTS] Generating audio for: {text}")
+            text, websocket, client_id = server.tts_batch.pop(0)
+            
+            # Get the client's language
+            language_code = client_settings_manager.get_client_language(client_id)
+            print(f"[TTS] Generating audio for client {client_id} in language {language_code}: {text}")
             
             try:
+                # Get the appropriate pipeline for this language
+                current_pipeline = pipeline_manager.get_pipeline(language_code)
+                
                 # Generate audio using pipeline call (which uses infer internally)
-                generator = tts_pipeline(
+                generator = current_pipeline(
                     text,
                     voice=f'{voice_name}', # _heart
                     speed=1.0
@@ -390,7 +544,7 @@ async def handle_tts_multi_utterances(websocket, text, client_id):
             if not buffer.endswith(('.', '!', '?')):
                 buffer += "."
             server = client_settings_manager.get_audio_server(client_id)
-            server.tts_batch.append((buffer, websocket))
+            server.tts_batch.append((buffer, websocket, client_id))
             server.tts_batch_last_update = time.time()
             await process_tts_batch(server)
             client_tts_buffers[client_id] = ""
@@ -414,7 +568,7 @@ async def handle_tts_multi_utterances(websocket, text, client_id):
                     print(f"[TTS] Timeout flush: '{sentence}'")
                     
                     server = client_settings_manager.get_audio_server(client_id)
-                    server.tts_batch.append((sentence, websocket))
+                    server.tts_batch.append((sentence, websocket, client_id))
                     server.tts_batch_last_update = time.time()
                     await process_tts_batch(server)
                 break
@@ -425,7 +579,7 @@ async def handle_tts_multi_utterances(websocket, text, client_id):
             
             if sentence:
                 server = client_settings_manager.get_audio_server(client_id)
-                server.tts_batch.append((sentence, websocket))
+                server.tts_batch.append((sentence, websocket, client_id))
                 server.tts_batch_last_update = time.time()
                 await process_tts_batch(server)
             
@@ -589,8 +743,19 @@ async def process_asr_batch(server, force=False):
                         confidence,
                         speech_duration
                     ):
-                        print(f"[ASR] {client_id}: '{transcript}'")
-                        await websocket.send(transcript)
+                        # Get client's trigger word
+                        client_trigger_word = client_settings_manager.get_client_trigger_word(client_id)
+                        
+                        # Check if transcript contains the trigger word
+                        found, trigger_portion, text_after = find_trigger_word(transcript, client_trigger_word)
+                        
+                        if found:
+                            print(f"[ASR] Trigger word '{trigger_portion}' detected for client {client_id}")
+                            # Send the full transcript to the client
+                            print(f"[ASR] {client_id}: '{transcript}'")
+                            await websocket.send(transcript)
+                        else:
+                            print(f"[ASR] No trigger word detected in transcript for client {client_id}")
                 except Exception as e:
                     print(f"[ASR] Error processing result {idx}: {e}")
                     continue
@@ -611,12 +776,28 @@ async def transcribe_audio(websocket):
         path_string = getattr(websocket.request, 'path', None) or getattr(websocket, 'path', None)
         parsed_uri = urlparse(path_string)
         query_params = parse_qs(parsed_uri.query)
+        
+        # Extract client ID
         client_id_list = query_params.get('client_id', [])
         if not client_id_list:
             print("No client_id in URI.")
             await websocket.close(code=4000, reason="Client ID required.")
             return
         client_id = client_id_list[0]
+        
+        # Extract language code
+        language_list = query_params.get('language', [])
+        language_code = language_list[0] if language_list else "en"
+        
+        # Extract trigger word
+        trigger_word_list = query_params.get('trigger_word', [])
+        trigger_word = trigger_word_list[0] if trigger_word_list else DEFAULT_TRIGGER_WORD
+        
+        # Set client language and trigger word
+        client_settings_manager.set_client_language(client_id, language_code)
+        client_settings_manager.set_client_trigger_word(client_id, trigger_word)
+        
+        print(f"Client {client_id} using trigger word: '{trigger_word}'")
 
         if not verify_api_key(websocket, client_id):
             print("Client rejected: invalid key/ID.")
@@ -624,7 +805,7 @@ async def transcribe_audio(websocket):
             return
         
         await websocket.send("AUTH_OK")
-        print(f"Client authenticated: {client_id}")
+        print(f"Client authenticated: {client_id}, Language: {language_code}")
 
         server = client_settings_manager.get_audio_server(client_id)
 
@@ -691,8 +872,21 @@ async def transcribe_audio(websocket):
                                         transcription.get("confidence", 0.0),
                                         result['speech_duration']
                                     ):
-                                        print(f"[ASR] Final transcript for {client_id}: '{transcription['text']}'")
-                                        await websocket.send(transcription["text"])
+                                        transcript_text = transcription["text"]
+                                        print(f"[ASR] Final transcript for {client_id}: '{transcript_text}'")
+                                        
+                                        # Get client's trigger word
+                                        client_trigger_word = client_settings_manager.get_client_trigger_word(client_id)
+                                        
+                                        # Check if transcript contains the trigger word
+                                        found, trigger_portion, text_after = find_trigger_word(transcript_text, client_trigger_word)
+                                        
+                                        if found:
+                                            print(f"[ASR] Trigger word '{trigger_portion}' detected for client {client_id}")
+                                            # Send the full transcript to the client
+                                            await websocket.send(transcript_text)
+                                        else:
+                                            print(f"[ASR] No trigger word detected in transcript for client {client_id}")
                                         
                                 except Exception as e:
                                     print(f"[ASR ERROR] Pipeline execution failed: {e}")
@@ -759,8 +953,40 @@ async def transcribe_audio(websocket):
 # MAIN
 ################################################################################
 
+async def cleanup_unused_pipelines_task():
+    """Periodically check for and clean up unused pipelines."""
+    while True:
+        try:
+            current_time = time.time()
+            # Check every 10 minutes
+            await asyncio.sleep(600)
+            
+            # Consider pipelines unused if not accessed in the last hour
+            unused_threshold = current_time - 3600  # 1 hour
+            
+            for lang, last_used in list(pipeline_manager.last_used.items()):
+                if last_used < unused_threshold and lang in pipeline_manager.pipelines:
+                    print(f"Cleaning up unused pipeline for {lang}, not used for {(current_time - last_used)/60:.1f} minutes")
+                    # Use the same cleanup logic as in _cleanup_if_needed
+                    try:
+                        pipeline_manager.pipelines[lang].model = pipeline_manager.pipelines[lang].model.to("cpu")
+                        del pipeline_manager.pipelines[lang]
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        print(f"Successfully freed resources for {lang} pipeline")
+                    except Exception as e:
+                        print(f"Error cleaning up unused pipeline: {e}")
+                        del pipeline_manager.pipelines[lang]
+        except Exception as e:
+            print(f"Error in cleanup task: {e}")
+            await asyncio.sleep(600)  # Wait before trying again
+
 async def main():
     try:
+        # Start the cleanup task
+        cleanup_task = asyncio.create_task(cleanup_unused_pipelines_task())
+        
         host = CONFIG['server']['websocket']['host']
         port = CONFIG['server']['websocket']['port']
         async with websockets.serve(transcribe_audio, host, port):

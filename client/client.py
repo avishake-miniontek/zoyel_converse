@@ -1,13 +1,35 @@
 #!/usr/bin/env python3
 """
-Audio Chat Client
+Audio Chat Client for Mira Converse
+====================================
 
-This script captures audio from your microphone, sends it to a server for
-real-time transcription, and displays the transcribed text. It also receives
-TTS audio data from the server, which it plays via AudioOutput.
+This script implements a full-featured client that captures audio from your microphone,
+sends it to a server for real-time transcription, and plays back the TTS audio responses.
+It features both GUI and headless operation modes, with intelligent retry mechanisms
+and robust error handling.
+
+System Architecture:
+-------------------
+1. Audio Input: Captures and processes microphone audio.
+2. WebSocket Client: Sends audio data to server and receives transcription/TTS responses.
+3. Audio Output: Plays TTS audio responses from the server.
+4. User Interface: Either graphical (tkinter) or headless console interface.
+5. LLM Processing: Handles detected trigger words and processes responses.
 
 Usage:
+------
     python client.py [--no-gui] [--input-device DEVICE] [--output-device DEVICE] [--volume VOLUME]
+
+Options:
+    --no-gui             Run in headless mode without GUI
+    --input-device       Name or index of input audio device (microphone)
+    --output-device      Name or index of output audio device (speakers)
+    --volume             Output volume level (0-100)
+
+Configuration:
+-------------
+    Settings are loaded from config.json, with environment variables and CLI arguments
+    taking precedence for certain settings.
 """
 from dotenv import load_dotenv
 load_dotenv()
@@ -101,43 +123,7 @@ with open('config.json', 'r') as f:
     CONFIG['server']['websocket']['port'] = os.getenv("WEBSOCKET_PORT", CONFIG['server']['websocket']['port'])
     CONFIG['server']['websocket']['api_key'] = os.getenv("WEBSOCKET_API_SECRET_KEY", CONFIG['server']['websocket']['api_key'])
 
-# Define Mira alternatives for trigger word detection (excluding 'mira' since it's handled by exact match)
-MIRA_ALTERNATIVES = frozenset(['nira', 'neera', 'miro', 'munira', 'miura', 'mihiro'])
-
-def find_trigger_word(msg: str, trigger: str) -> tuple[bool, str, str]:
-    """
-    Find the trigger word and return both the trigger portion and everything after it.
-    Returns (found, trigger_portion, text_after_trigger) where:
-    - found is True if trigger was found
-    - trigger_portion contains the actual trigger word as it appeared in the text
-    - text_after_trigger contains the text after the trigger word
-    """
-    msg_lower = msg.lower()
-    trigger_lower = trigger.lower()
-    pos = msg_lower.find(trigger_lower)
-    trigger_len = None
-    
-    # If exact trigger not found and trigger is "mira", try alternatives
-    if pos == -1 and trigger_lower == "mira":
-        for alt in MIRA_ALTERNATIVES:
-            alt_lower = alt.lower()
-            alt_pos = msg_lower.find(alt_lower)
-            if alt_pos != -1:
-                # Found alternative, use its position and length
-                pos = alt_pos
-                trigger_len = len(alt)
-                break
-    
-    if pos != -1:
-        # Match found (either exact trigger or alternative)
-        if trigger_len is None:  # No alternative was used
-            trigger_len = len(trigger)
-        # Extract both parts: the trigger portion and everything after
-        trigger_portion = msg[pos:pos + trigger_len]
-        text_after = msg[pos + trigger_len:].strip()
-        return True, trigger_portion, text_after
-    
-    return False, "", ""
+# Trigger word detection is now handled on the server side
 
 # Server configuration
 API_KEY = CONFIG['server']['websocket']['api_key']
@@ -146,16 +132,32 @@ SERVER_PORT = CONFIG['server']['websocket']['port']
 
 # Generate unique client ID and build the server URI.
 CLIENT_ID = uuid.uuid4()
-SERVER_URI = f"ws://{SERVER_HOST}:{SERVER_PORT}?api_key={API_KEY}&client_id={CLIENT_ID}"
-
-# Trigger word configuration
+# Include language setting and trigger word in the server URI
+LANGUAGE_CODE = CONFIG['llm']['prompt']['language']
 TRIGGER_WORD = CONFIG['assistant']['name']
+SERVER_URI = f"ws://{SERVER_HOST}:{SERVER_PORT}?api_key={API_KEY}&client_id={CLIENT_ID}&language={LANGUAGE_CODE}&trigger_word={TRIGGER_WORD}"
+
 logger.info(f"Loaded trigger word from config: '{TRIGGER_WORD}'")
 ################################################################################
 # ASYNCHRONOUS TASKS
 ################################################################################
 
 class MessageHandler:
+    """
+    Handles the message processing pipeline between the WebSocket, audio system, and LLM.
+    
+    This class provides queues for text and audio messages and coordinates the flow of data
+    between the server, audio output system, and LLM client. It serves as the central hub
+    for message routing in the client application.
+    
+    Attributes:
+        text_queue (asyncio.Queue): Queue for text messages received from server
+        audio_queue (asyncio.Queue): Queue for audio data received from server
+        audio_output (AudioOutput): Audio playback manager
+        audio_interface (AudioInterface): GUI or headless interface handler
+        llm_client (LLMClient): Client for LLM processing
+        websocket: Connection to the server, set by external task
+    """
     def __init__(self, audio_output, audio_interface, llm_client):
         self.text_queue = asyncio.Queue()
         self.audio_queue = asyncio.Queue()
@@ -165,12 +167,27 @@ class MessageHandler:
         self.websocket = None
 
     async def handle_llm_chunk(self, text):
-        """Send LLM-generated text to the server as a TTS request."""
+        """
+        Send LLM-generated text to the server as a TTS request.
+        
+        The server will convert this text to speech and send back audio data.
+        
+        Args:
+            text (str): Text chunk from LLM to be converted to speech
+        """
         if self.websocket:
             await self.websocket.send(f"TTS:{text}")
 
     async def process_text(self, text: str):
-        """Process text input with the LLM."""
+        """
+        Process text input with the LLM and handle responses.
+        
+        This method is called when a trigger word is detected in transcribed speech
+        or when text is input directly through the interface.
+        
+        Args:
+            text (str): The input text to process with the LLM
+        """
         try:
             await self.audio_output.start_stream()
             await self.llm_client.process_trigger(text, callback=self.handle_llm_chunk)
@@ -178,7 +195,17 @@ class MessageHandler:
             logger.error("Failed to process text input: %s", e, exc_info=True)
 
 async def websocket_receiver(websocket, handler):
-    """Dedicated task for receiving from WebSocket and distributing messages"""
+    """
+    Dedicated task for receiving messages from the WebSocket and distributing them.
+    
+    This function runs continuously in the background, receiving messages from the
+    server and routing them to the appropriate queue (text or audio) in the handler.
+    It implements error handling with reconnection logic.
+    
+    Args:
+        websocket: The WebSocket connection to the server
+        handler (MessageHandler): Message handler for routing received data
+    """
     handler.websocket = websocket
     error_count = 0
     max_errors = 3
@@ -205,7 +232,17 @@ async def websocket_receiver(websocket, handler):
             await asyncio.sleep(0.1)
 
 async def process_audio_messages(handler):
-    """Process audio frames"""
+    """
+    Process audio frames received from the server.
+    
+    This function continuously monitors the audio queue and handles incoming audio frames.
+    It processes two types of frames:
+    1. VAD (Voice Activity Detection) frames - Updates the GUI with speech detection status
+    2. Audio data frames - Plays back TTS audio through the audio output system
+    
+    Args:
+        handler (MessageHandler): Message handler containing the audio queue
+    """
     while True:
         try:
             msg = await handler.audio_queue.get()
@@ -224,7 +261,16 @@ async def process_audio_messages(handler):
             await asyncio.sleep(0.001)
 
 async def process_text_messages(handler):
-    """Process text messages"""
+    """
+    Process text messages received from the server.
+    
+    This function handles transcriptions coming from the server's ASR system.
+    The server only sends transcripts that contain the trigger word, so we can
+    process all received messages directly with the LLM.
+    
+    Args:
+        handler (MessageHandler): Message handler containing the text queue
+    """
     while True:
         try:
             msg = await handler.text_queue.get()
@@ -239,13 +285,12 @@ async def process_text_messages(handler):
                 if sentence:  # Skip empty strings
                     print("Message: " + sentence + "\n")
 
-            found, trigger_portion, text_after = find_trigger_word(msg, TRIGGER_WORD)
-            if found:
-                # Log the full transcript
-                print(f"\n[TRANSCRIPT] {msg}")
-                # Send the full message to LLM (including trigger word)
-                await handler.audio_output.start_stream()
-                asyncio.create_task(handler.process_text(msg))
+            # Log the full transcript
+            print(f"\n[TRANSCRIPT] {msg}")
+            
+            # Process the message with LLM
+            await handler.audio_output.start_stream()
+            asyncio.create_task(handler.process_text(msg))
                 
         except Exception as e:
             logger.error("Failed to process text message: %s", e)
@@ -267,7 +312,21 @@ async def check_gui_input(handler):
 async def record_and_send_audio(websocket, audio_interface, audio_core):
     """
     Continuously read audio from the microphone and send raw PCM frames to the server.
-    Audio is resampled to 16kHz if needed.
+    
+    This function handles the core audio capture functionality of the client. It reads 
+    audio chunks from the microphone, processes them (converting to mono, resampling if needed),
+    and sends them to the server for speech-to-text processing.
+    
+    The function implements robust error handling with retry logic to deal with 
+    transient network issues and audio device problems.
+    
+    Args:
+        websocket: WebSocket connection to the server
+        audio_interface: Interface for GUI updates and user interaction
+        audio_core: Handles microphone audio capture and processing
+        
+    Raises:
+        Various exceptions which are caught by the parent AsyncThread
     """
     error_count = 0
     max_errors = 3
@@ -357,6 +416,20 @@ class AsyncThread(threading.Thread):
     """
     Runs the main async loop to connect to the server, handle microphone audio,
     and receive transcripts.
+    
+    This class encapsulates the core client functionality in a separate thread,
+    allowing the main thread to handle the GUI or console interface. It manages
+    the WebSocket connection, audio initialization, and all async tasks.
+    
+    Attributes:
+        audio_interface: GUI or headless interface for user interaction
+        audio_core: Manages microphone audio capture
+        loop: Asyncio event loop for this thread
+        websocket: WebSocket connection to the server
+        tasks: List of running async tasks
+        running: Flag indicating whether the thread should continue running
+        handler: MessageHandler instance for processing messages
+        daemon: Whether this is a daemon thread (True)
     """
     def __init__(self, audio_interface, audio_core):
         super().__init__()
@@ -370,7 +443,15 @@ class AsyncThread(threading.Thread):
         self.daemon = True
 
     async def connect_to_server(self):
-        """Connect to the WebSocket server and wait for authentication."""
+        """
+        Connect to the WebSocket server and wait for authentication.
+        
+        This method establishes the WebSocket connection with the server,
+        configures ping/pong keep-alive settings, and verifies authentication.
+        
+        Returns:
+            bool: True if connection and authentication successful, False otherwise
+        """
         try:
             # Log the server URI before connecting
             logger.info(f"Attempting to connect to server at: {SERVER_URI}")
@@ -403,7 +484,16 @@ class AsyncThread(threading.Thread):
 
     async def handle_server_connection(self):
         """
-        Attempt to connect and, once connected, start the tasks for sending and receiving audio.
+        Manage the server connection with automatic retry logic.
+        
+        This method attempts to connect to the server and, when successful,
+        starts all the necessary async tasks for audio capture, text processing,
+        and message handling. It also implements retry logic for reconnecting
+        when the connection is lost.
+        
+        The retry parameters are loaded from the configuration:
+        - max_retries: Maximum number of connection attempts
+        - delay_seconds: Time to wait between retries
         """
         retry_count = 0
         max_retries = CONFIG['client']['retry']['max_attempts']
@@ -469,7 +559,16 @@ class AsyncThread(threading.Thread):
                 await asyncio.sleep(delay_seconds)
 
     async def initialize_audio(self):
-        """Initialize microphone and speaker."""
+        """
+        Initialize audio input and output devices.
+        
+        This method initializes both the audio output (speakers) and audio input 
+        (microphone) devices. It also updates the GUI with the selected input device
+        name when running in GUI mode.
+        
+        Returns:
+            bool: True if audio initialization was successful, False otherwise
+        """
         try:
             await audio_output.initialize()
             stream, device_info, rate, needs_resampling = self.audio_core.init_audio_device()
@@ -487,7 +586,13 @@ class AsyncThread(threading.Thread):
             return False
 
     async def async_main(self):
-        """Main async loop for the client."""
+        """
+        Main async loop for the client.
+        
+        This method serves as the entry point for the async operations,
+        initializing audio devices and managing the server connection.
+        It includes error handling and proper cleanup.
+        """
         try:
             if not await self.initialize_audio():
                 return
@@ -498,7 +603,15 @@ class AsyncThread(threading.Thread):
             await self.cleanup()
 
     async def cleanup(self):
-        """Clean up resources."""
+        """
+        Clean up all resources before shutting down.
+        
+        This method ensures all resources are properly released:
+        - Audio output stream is closed
+        - Audio input devices are closed
+        - WebSocket connection is closed
+        - All async tasks are canceled
+        """
         try:
             if audio_output:
                 await audio_output.close()
@@ -517,7 +630,13 @@ class AsyncThread(threading.Thread):
             logger.error("[CLIENT] Error during cleanup: %s", e)
 
     def stop(self):
-        """Stop everything gracefully."""
+        """
+        Stop the thread gracefully.
+        
+        This method signals the thread to stop and ensures cleanup is performed.
+        It uses run_coroutine_threadsafe to safely execute the cleanup coroutine
+        from another thread.
+        """
         self.running = False
         if self.loop and not self.loop.is_closed():
             async def shutdown():
@@ -529,7 +648,13 @@ class AsyncThread(threading.Thread):
                 logger.error("[CLIENT] Error stopping: %s", e)
 
     def run(self):
-        """Thread run: create an event loop and run async_main."""
+        """
+        Thread entry point - creates an event loop and runs the async main function.
+        
+        This method is called when the thread starts. It creates a new asyncio event loop,
+        runs the async_main coroutine, and ensures proper cleanup of the loop and tasks
+        when finished.
+        """
         try:
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)

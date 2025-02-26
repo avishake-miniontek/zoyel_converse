@@ -16,7 +16,8 @@
             "kokoro": {
                 "path": "define here or in .env KOKORO_PATH, KOKORO_VOICE_NAME, KOKORO_LANGUAGE_CODE",
                 "voice_name": "af_heart",
-                "language_code": "a"
+                "language_code": "en",
+                "max_pipelines": 3
             }
         }
     },
@@ -36,12 +37,6 @@
         "vad_settings": {
             "threshold": 0.3,
             "consecutive_threshold": 2
-        }
-    },
-    "test_client": {
-        "retry": {
-            "max_attempts": 3,
-            "delay_seconds": 2
         }
     }
 }

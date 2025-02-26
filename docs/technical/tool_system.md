@@ -38,6 +38,7 @@ class YourTool(BaseTool):
         self.args = ["arg1", "arg2"]  # List of argument names in order
         self.llm_response = True  # Set to False for direct text responses
         self.result_prompt = "Optional prompt for formatting LLM responses"
+        self.needs_translation = False  # Set to True to enable automatic translation
 
     async def execute(self, args: List[str]) -> str:
         """Execute the tool with ordered arguments."""
@@ -90,6 +91,11 @@ Tools are automatically discovered and registered by the `ToolRegistry` class:
 3. Tools are instantiated and registered if they have a valid name
 4. The registry provides a tool prompt showing available tools and usage
 
+The tool registry also supports multilingual tool prompts:
+- Tool descriptions can be provided in multiple languages
+- The system automatically selects the appropriate language based on the client's configuration
+- The `get_tool_prompt` method accepts a language code parameter to retrieve language-specific tool documentation
+
 ## Tool Execution Flow
 
 1. The LLM client receives user input and identifies tool calls in the format:
@@ -105,6 +111,11 @@ Tools are automatically discovered and registered by the `ToolRegistry` class:
 3. Results are processed based on the tool's llm_response setting:
    - If True: Result is sent to LLM for natural language formatting using result_prompt
    - If False: Result is returned directly to the user
+
+4. If needed, tool responses are translated to the client's configured language:
+   - Tools can set `needs_translation = True` to enable automatic translation
+   - Translation is performed for non-English languages when needed
+   - Original measurements, numbers, and proper nouns are preserved
 
 ## Example: Weather Tool
 
@@ -141,6 +152,7 @@ class WeatherTool(BaseTool):
         self.description = "Get weather information for a location"
         self.args = ["city", "state", "country"]  # country is optional
         self.llm_response = False  # Weather tool returns formatted text directly
+        self.needs_translation = True  # Enable automatic translation for non-English languages
 
     async def execute(self, args: List[str]) -> str:
         try:

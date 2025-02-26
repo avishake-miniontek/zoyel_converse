@@ -19,17 +19,19 @@ The system is built around a WebSocket connection. The Python client (written in
 When the client starts, it builds a connection URI using parameters read from a configuration file (config.json). The URI is of the form:
 
 ```
-ws://<SERVER_HOST>:<SERVER_PORT>?api_key=<API_KEY>&client_id=<CLIENT_ID>
+ws://<SERVER_HOST>:<SERVER_PORT>?api_key=<API_KEY>&client_id=<CLIENT_ID>&language=<LANGUAGE_CODE>
 ```
 
 * `api_key` and `client_id` are provided as query parameters
 * The client generates a unique client identifier (`client_id`) using a UUID
+* `language` specifies the ISO language code (e.g., "en", "es", "fr") for TTS output
 
 ### Authentication
 
 * Upon connection:
-  * The server extracts the `api_key` and `client_id` from the WebSocket's request URI
+  * The server extracts the `api_key`, `client_id`, and `language` from the WebSocket's request URI
   * The server compares the provided `api_key` with its configured value and verifies that a client ID is present
+  * The server stores the language code for the client session to use for TTS output
 * Server Response:
   * If the API key (and client ID) is valid, the server sends the string `"AUTH_OK"`
   * If authentication fails, the server may send `"AUTH_FAILED"` (or close the connection)
@@ -166,7 +168,7 @@ When the server processes a TTS request:
 1. Client initiates connection:
    * Request URI:
      ```
-     ws://<SERVER_HOST>:<SERVER_PORT>?api_key=YOUR_API_KEY&client_id=some-uuid
+     ws://<SERVER_HOST>:<SERVER_PORT>?api_key=YOUR_API_KEY&client_id=some-uuid&language=en
      ```
 2. Server verifies query parameters
 3. Server sends:
@@ -198,7 +200,8 @@ When the server processes a TTS request:
 
 2. Server processes the text:
    * The text is buffered until a sentence is complete
-   * The TTS pipeline (using the Kokoro model) is invoked
+   * The TTS pipeline for the client's language is loaded or retrieved from cache
+   * The TTS pipeline (using the Kokoro model) is invoked with the appropriate language settings
 
 3. Server sends TTS audio:
    * A series of binary frames with Frame Type `0x01` are sent, each containing a chunk of int16 PCM TTS audio
@@ -217,7 +220,7 @@ When the server processes a TTS request:
 ## 7. Summary of Key Points for Client Developers
 
 ### Connection Setup
-* Use the WebSocket protocol to connect to the server using the proper query parameters (`api_key` and `client_id`)
+* Use the WebSocket protocol to connect to the server using the proper query parameters (`api_key`, `client_id`, and `language`)
 
 ### Audio Data (Client → Server)
 * Send continuous binary messages containing raw PCM data:

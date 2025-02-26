@@ -64,6 +64,9 @@ Example: "Mira, what's the weather in San Francisco?"
   - Arch Linux: `sudo pacman -S espeak-ng`
   - macOS: `brew install espeak-ng`
   - Windows: Download and install from [GitHub releases](https://github.com/espeak-ng/espeak-ng/releases)
+- Language-specific dependencies (only needed for certain languages):
+  - Japanese support: `pip install misaki[ja]`
+  - Chinese support: `pip install misaki[zh]`
 
 ### Client Requirements
 - Python 3.11 or higher
@@ -110,7 +113,23 @@ Note: After running `poetry install`, you can run the Python files directly sinc
 
 ### Server Setup
 
-The server component requires Python 3.8 or higher and an NVIDIA GPU with at least 4GB VRAM for real-time performance. Choose your operating system below for specific setup instructions.
+The server component requires Python 3.8 or higher and an NVIDIA GPU with at least 4GB VRAM for real-time performance. 
+
+#### Language-Specific Dependencies
+
+If you need Japanese or Chinese language support, you'll need to install additional dependencies on the server:
+
+```bash
+# For Japanese support
+pip install misaki[ja]
+
+# For Chinese support
+pip install misaki[zh]
+```
+
+These dependencies are required only on the server side and only if you plan to use these specific languages.
+
+Choose your operating system below for specific setup instructions.
 
 #### Linux Server Setup
 
@@ -312,6 +331,27 @@ poetry run python client.py
 
 The system uses a combination of environment variables (.env) and configuration files (config.json) to manage settings. This separation allows for better security by keeping sensitive information like API keys in the environment variables while maintaining other configuration in JSON files.
 
+### Configuration Structure
+
+- **Environment Variables (.env)**: Store sensitive information and connection details
+- **Configuration Files (config.json)**: Store non-sensitive settings and parameters
+- **Priority**: Environment variables take precedence over config file settings
+
+To get started:
+
+1. Copy the default configuration files:
+```bash
+# For server
+cp server/default_config.json server/config.json
+cp server/.env.example server/.env
+
+# For client
+cp client/default_config.json client/config.json
+cp client/.env.example client/.env
+```
+
+2. Edit both .env files and config.json files as needed
+
 ### Environment Variables (.env)
 
 #### Server Environment Variables (server/.env)
@@ -336,29 +376,19 @@ WEBSOCKET_PORT=8765
 WEBSOCKET_API_SECRET_KEY=your_secure_key_here
 
 # LLM Configuration
-MODEL_NAME=gpt-3.5-turbo
+MODEL_NAME=gpt-3.5-turbo  # Can be an OpenAI model or path to local model
 API_SECRET_KEY=your_api_key_here
-API_BASE=https://api.openai.com/v1
+API_BASE=https://api.openai.com/v1  # Or URL to local API server
 ```
 
 ### Configuration Files (config.json)
 
-The remaining settings are managed through config.json files. To get started:
-
-1. Copy the default configuration files:
-```bash
-# For server
-cp server/default_config.json server/config.json
-
-# For client
-cp client/default_config.json client/config.json
-```
-
-2. Edit the config.json files as needed. These files contain non-sensitive settings such as:
-   - Audio processing parameters
-   - Speech detection settings
-   - Conversation parameters
-   - Client retry settings
+The config.json files contain non-sensitive settings such as:
+- Audio processing parameters
+- Speech detection settings
+- Conversation parameters
+- Language settings
+- Client retry settings
 
 Here's a detailed explanation of each configuration section:
 
@@ -394,20 +424,62 @@ Here's a detailed explanation of each configuration section:
             // "path": "C:\\Users\\user\\models\\Kokoro-82M",
             "voice_name": "af",          // Voice pack to use
             "language_code": "a"         // Language code for TTS (optional, defaults to 'a')
-                                        // Available languages:
-                                        // 'a' - American English
-                                        // 'b' - British English
-                                        // 'e' - Spanish
-                                        // 'f' - French
-                                        // 'h' - Hindi
-                                        // 'i' - Italian
-                                        // 'j' - Japanese (requires: pip install misaki[ja])
-                                        // 'p' - Brazilian Portuguese
-                                        // 'z' - Mandarin Chinese (requires: pip install misaki[zh])
+                                        // See "Supported Languages" section for details
         }
     }
 }
 ```
+
+## Supported Languages
+
+MiraConverse supports multiple languages for both prompts and text-to-speech synthesis. The language is selected on the client side and passed to the server for processing.
+
+### Dynamic Language Pipeline Management
+
+The server now implements a dynamic language pipeline management system that:
+- Loads language-specific TTS pipelines on demand
+- Caches recently used language pipelines for better performance
+- Automatically frees resources from unused language pipelines
+
+### Supported Languages
+
+The following languages are currently supported:
+
+| Language | ISO Code | Kokoro Code | Additional Dependencies |
+|----------|----------|-------------|-------------------------|
+| American English | en | a | None |
+| British English | en-gb | b | None |
+| Spanish | es | e | None |
+| French | fr | f | None |
+| Hindi | hi | h | None |
+| Italian | it | i | None |
+| Japanese | ja | j | `pip install misaki[ja]` (server-side) |
+| Brazilian Portuguese | pt | p | None |
+| Mandarin Chinese | zh | z | `pip install misaki[zh]` (server-side) |
+
+### Language Configuration
+
+Language selection is configured on the client side in the client's `config.json` file:
+
+```json
+"llm": {
+    "prompt": {
+        "language": "en",  // Set this to the desired ISO language code (en, es, fr, etc.)
+        "custom_path": null,
+        "directory": "prompts"
+    }
+}
+```
+
+When the client connects to the server, it automatically:
+1. Sends the configured language code as a connection parameter
+2. The server extracts this language code from the connection URI
+3. The server maps the ISO language code (e.g., "en") to Kokoro's internal code (e.g., "a")
+4. The appropriate language pipeline is loaded or retrieved from cache
+
+> **Note:** For Japanese and Chinese language support, additional dependencies must be installed on the server:
+> - For Japanese: `pip install misaki[ja]`
+> - For Chinese: `pip install misaki[zh]`
 
 ### OpenAI API Compatible LLM Configuration
 ```json
@@ -450,7 +522,7 @@ Here's a detailed explanation of each configuration section:
 }
 ```
 
-### Client Settings
+### Client Retry Settings
 ```json
 "client": {
     "retry": {
@@ -460,7 +532,12 @@ Here's a detailed explanation of each configuration section:
 }
 ```
 
-These retry settings are used for both initial server connection and automatic reconnection attempts when the connection is lost. The client will attempt to reconnect up to the specified number of attempts, waiting the specified delay between each attempt.
+These retry settings are used for:
+- Initial server connection attempts
+- Automatic reconnection when the connection is lost
+- Recovery from transient network issues
+
+The client will attempt to reconnect up to the specified number of attempts, waiting the specified delay between each attempt. This provides robust operation even in unstable network environments.
 
 ## Usage
 

@@ -442,12 +442,12 @@ class LLMClient:
                                 if not sentence.endswith(('.', '!', '?')):
                                     sentence += "."
                                 if callback:
-                                    asyncio.create_task(callback(sentence))
+                                    await callback(sentence)  # Use await instead of create_task
                                 buffer = ""
                             break
                         sentence = buffer[:boundary+1].strip()
                         if sentence and callback:
-                            asyncio.create_task(callback(sentence))
+                            await callback(sentence)  # Use await instead of create_task
                         buffer = buffer[boundary+1:].strip()
             
             # Send any remaining text with proper punctuation
@@ -455,7 +455,7 @@ class LLMClient:
                 sentence = buffer.strip()
                 if not sentence.endswith(('.', '!', '?')):
                     sentence += "."
-                asyncio.create_task(callback(sentence))
+                await callback(sentence)  # Use await instead of create_task
                 
             # Store conversation history if no tool was called
             if not parse_tool_call(full_response):

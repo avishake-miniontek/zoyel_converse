@@ -40,9 +40,7 @@ services:
       - MODEL_NAME=${MODEL_NAME:-gpt-3.5-turbo}
       - API_SECRET_KEY=${API_SECRET_KEY}
       - API_BASE=${API_BASE:-https://api.openai.com/v1}
-      - DISPLAY=${DISPLAY}
-    volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix
+    volumes: []
     devices:
       - /dev/snd:/dev/snd
     network_mode: "host"  # For audio and display access

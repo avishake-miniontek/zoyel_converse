@@ -34,9 +34,6 @@ KOKORO_VOICE_NAME=af_heart
 MODEL_NAME=gpt-3.5-turbo
 API_SECRET_KEY=your_openai_api_key
 API_BASE=https://api.openai.com/v1
-
-# Display for GUI (Linux only)
-DISPLAY=:0
 ```
 
 ## Building and Running
@@ -85,14 +82,14 @@ The Docker setup mounts the following volumes:
 
 - Whisper model directory: `${WHISPER_MODEL_PATH}:/models/whisper`
 - Kokoro model directory: `${KOKORO_MODEL_PATH}:/models/kokoro`
-- X11 socket (for GUI): `/tmp/.X11-unix:/tmp/.X11-unix`
 
 ## Device Access
 
 The client container has access to:
 
 - Sound devices: `/dev/snd:/dev/snd`
-- Display (via X11 socket and DISPLAY environment variable)
+
+**Note:** The client runs in headless mode (`--no-gui` flag) when using Docker, so no display access is required.
 
 The server container has access to:
 
@@ -117,17 +114,6 @@ docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
 ```
 
 If this command fails, follow the [NVIDIA Container Toolkit installation guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
-
-### X11 Display Issues
-
-For GUI access on Linux:
-
-1. Allow X server connections:
-```bash
-xhost +local:docker
-```
-
-2. Verify the DISPLAY environment variable is set correctly in your `.env` file
 
 ### Network Issues
 

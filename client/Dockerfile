@@ -3,7 +3,7 @@ FROM python:3.11-slim as builder
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    POETRY_VERSION=1.7.1 \
+    POETRY_VERSION=2.1.1 \
     POETRY_HOME="/opt/poetry" \
     POETRY_VIRTUALENVS_IN_PROJECT=true \
     POETRY_NO_INTERACTION=1
@@ -28,17 +28,16 @@ WORKDIR /app
 # Copy Poetry configuration files
 COPY pyproject.toml poetry.lock* ./
 
-# Install dependencies
-RUN poetry install --no-root --no-dev
+# Update lock file and install dependencies
+RUN poetry lock && poetry install --no-root --only main
 
 # Second stage for the final image
 FROM python:3.11-slim
 
-# Install system dependencies for audio and GUI
+# Install system dependencies for audio
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     portaudio19-dev \
-    tk \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -62,4 +61,4 @@ ENV WEBSOCKET_HOST=server \
     API_BASE=https://api.openai.com/v1
 
 # Run the client
-CMD ["python", "client.py"]
+CMD ["python", "client.py", "--no-gui"]

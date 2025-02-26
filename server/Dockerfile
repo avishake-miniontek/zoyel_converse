@@ -77,8 +77,7 @@ ENV WEBSOCKET_HOST=0.0.0.0 \
     WEBSOCKET_PORT=8765 \
     WHISPER_PATH=/models/whisper \
     KOKORO_PATH=/models/kokoro \
-    KOKORO_VOICE_NAME=af_heart \
-    KOKORO_LANGUAGE_CODE=a
+    KOKORO_VOICE_NAME=af_heart
 
 # Run the server
 CMD ["python", "server.py"]

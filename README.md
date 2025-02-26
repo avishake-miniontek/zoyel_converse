@@ -365,7 +365,6 @@ WEBSOCKET_API_SECRET_KEY=your_secure_key_here
 WHISPER_PATH=path_to_whisper_model
 KOKORO_PATH=path_to_kokoro_model
 KOKORO_VOICE_NAME=af_heart
-KOKORO_LANGUAGE_CODE=a
 ```
 
 #### Client Environment Variables (client/.env)

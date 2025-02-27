@@ -204,15 +204,29 @@ MiraConverse can also be run using Docker containers. This is particularly usefu
    cd mira_converse
    ```
 
-2. Create a `.env` file based on the template:
+2. Create `.env` files for both server and client based on their templates:
    ```bash
-   cp .env.template .env
+   # For server
+   cd server
+   cp .env.example .env
+   
+   # For client
+   cd ../client
+   cp .env.example .env
    ```
 
-3. Edit the `.env` file to set your configuration.
+3. Edit both `.env` files to set your configuration.
 
-4. Build and run the containers:
+4. Build and run the server container:
    ```bash
+   # In the server directory
+   docker compose build
+   docker compose up
+   ```
+
+5. In a separate terminal, build and run the client container:
+   ```bash
+   # In the client directory
    docker compose build
    docker compose up
    ```

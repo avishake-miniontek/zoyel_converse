@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04 as builder
+FROM nvidia/cuda:12.5.0-runtime-ubuntu22.04 as builder
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -40,7 +40,7 @@ COPY pyproject.toml poetry.lock* ./
 RUN poetry lock && poetry install --no-root --only main
 
 # Second stage for the final image
-FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.5.0-runtime-ubuntu22.04
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -68,6 +68,7 @@ COPY . .
 
 # Create directories for model mounting
 RUN mkdir -p /models/whisper /models/kokoro
+VOLUME ["/models/whisper", "/models/kokoro"]
 
 # Expose the WebSocket port
 EXPOSE 8765

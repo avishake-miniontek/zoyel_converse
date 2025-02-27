@@ -38,35 +38,25 @@ API_BASE=https://api.openai.com/v1
 
 ## Building and Running
 
-### Build the containers:
+The Docker setup for MiraConverse is split into separate containers for the server and client components. You'll need to build and run each container separately.
+
+### Server:
 
 ```bash
+cd server
 docker compose build
-```
-
-### Run both server and client:
-
-```bash
 docker compose up
 ```
 
-### Run only the server:
+### Client:
 
 ```bash
-docker compose up server
+cd client
+docker compose build
+docker compose up
 ```
 
-### Run only the client:
-
-```bash
-docker compose up client
-```
-
-### Run in detached mode:
-
-```bash
-docker compose up -d
-```
+Note: Make sure to set the `WEBSOCKET_HOST` environment variable in the client's .env file to point to the server's address. If running both containers on the same machine, you can use the Docker host's IP address or hostname.
 
 ## Environment Variables
 
@@ -110,10 +100,12 @@ If you encounter audio issues:
 To verify NVIDIA Container Toolkit is working:
 
 ```bash
-docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.5.0-base-ubuntu22.04 nvidia-smi
 ```
 
 If this command fails, follow the [NVIDIA Container Toolkit installation guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
+
+Note: The server container uses CUDA 12.5.0, which is compatible with host systems running CUDA 12.5.0 or later.
 
 ### Network Issues
 

@@ -78,12 +78,25 @@ class ServerAudioCore:
         # ---------------- Silero VAD Setup ----------------
         self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
         print(f"[VAD] Using device: {self.device}")
-        model, _ = torch.hub.load(
-            repo_or_dir='snakers4/silero-vad',
-            model='silero_vad',
-            force_reload=False
-        )
-        self.vad_model = model.to(self.device)
+        try:
+            model, _ = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_vad',
+                force_reload=False,
+                trust_repo=True
+            )
+            self.vad_model = model.to(self.device)
+            print(f"[VAD] Successfully loaded Silero VAD model to {self.device}")
+        except Exception as e:
+            print(f"[VAD] Error loading model to {self.device}, falling back to CPU: {e}")
+            self.device = 'cpu'
+            model, _ = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_vad',
+                force_reload=False,
+                trust_repo=True
+            )
+            self.vad_model = model.to(self.device)
         # Silero VAD requires frames of 512 samples for 16kHz audio
         self.VAD_FRAME_SIZE = 512
         self._vad_buffer = []

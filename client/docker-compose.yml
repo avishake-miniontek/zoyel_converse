@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  client:
+    build: .
+    image: mira-converse-client
+    container_name: mira-client
+    restart: unless-stopped
+    environment:
+      - WEBSOCKET_HOST=${WEBSOCKET_HOST:-localhost}
+      - WEBSOCKET_PORT=${WEBSOCKET_PORT:-8765}
+      - WEBSOCKET_API_SECRET_KEY=${WEBSOCKET_API_SECRET_KEY:-mira}
+      - MODEL_NAME=${MODEL_NAME:-gpt-3.5-turbo}
+      - API_SECRET_KEY=${API_SECRET_KEY:-your_api_key_here}
+      - API_BASE=${API_BASE:-https://api.openai.com/v1}
+    volumes: []
+    devices:
+      - /dev/snd:/dev/snd
+    network_mode: "host"  # For audio and display access

@@ -1,4 +1,4 @@
-FROM python:3.11-slim as builder
+FROM python:3.11 as builder
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     libsndfile1 \
     portaudio19-dev \
+    alsa-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Poetry
@@ -32,12 +33,13 @@ COPY pyproject.toml poetry.lock* ./
 RUN poetry lock && poetry install --no-root --only main
 
 # Second stage for the final image
-FROM python:3.11-slim
+FROM python:3.11
 
 # Install system dependencies for audio
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     portaudio19-dev \
+    alsa-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

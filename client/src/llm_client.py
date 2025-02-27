@@ -34,15 +34,17 @@ if not logger.handlers:
 def find_sentence_boundary(text: str) -> int:
     """
     Returns the index of a valid sentence boundary in the given text,
-    ignoring punctuation that is part of a decimal number.
+    supporting multiple languages (Latin, Chinese, Japanese, Hindi),
+    while ignoring punctuation that is part of a decimal number.
     """
-    pattern = re.compile(r'(?<!\d)([.!?])(?=\s|$)')
+    # Include Latin, Chinese, Japanese, and Hindi sentence-ending punctuation
+    pattern = re.compile(r'(?<!\d)([.!?。！？।॥…」])(?=\s|$|」)')
     matches = list(pattern.finditer(text))
     if matches:
         return matches[-1].start()
     # Fallback: manually scan from the end
     for i in range(len(text) - 1, -1, -1):
-        if text[i] in ".!?":
+        if text[i] in ".!?。！？।॥…」":
             # If at the end of the string, check if it might be part of a decimal
             if i == len(text) - 1 and i > 0 and text[i - 1].isdigit():
                 continue  # might be incomplete decimal

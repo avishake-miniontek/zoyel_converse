@@ -419,17 +419,20 @@ client_tts_locks = {}
 
 def find_sentence_split_index(text: str) -> int:
     """
-    Returns the index of a sentence-ending punctuation in text (., !, ?), 
-    skipping decimal points used in numbers.
+    Returns the index of a sentence-ending punctuation in text,
+    supporting multiple languages (Latin, Chinese, Japanese, Hindi),
+    while skipping decimal points used in numbers.
     """
-    pattern = re.compile(r'(?<!\d)([.!?])(?=\s|$)')
+    # Include Latin, Chinese, Japanese, and Hindi sentence-ending punctuation
+    pattern = re.compile(r'(?<!\d)([.!?。！？।॥…」])(?=\s|$|」)')
     matches = list(pattern.finditer(text))
     if matches:
         return matches[-1].start()
     # Fallback: manually scan from the end
     for i in range(len(text) - 1, -1, -1):
         ch = text[i]
-        if ch in ".!?":
+        if ch in ".!?。！？।॥…」":
+            # Skip decimal points in numbers
             if ch == '.' and i > 0 and i < len(text) - 1 and text[i - 1].isdigit() and text[i + 1].isdigit():
                 continue
             return i

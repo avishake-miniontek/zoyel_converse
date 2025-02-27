@@ -30,6 +30,7 @@ if not logger.handlers:
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
+
 def find_sentence_boundary(text: str) -> int:
     """
     Returns the index of a valid sentence boundary in the given text,
@@ -44,12 +45,13 @@ def find_sentence_boundary(text: str) -> int:
         if text[i] in ".!?":
             # If at the end of the string, check if it might be part of a decimal
             if i == len(text) - 1 and i > 0 and text[i - 1].isdigit():
-                # Instead of returning immediately, consider this punctuation might be incomplete
-                continue  # or return -1 to indicate no complete sentence yet
+                continue  # might be incomplete decimal
+            # Skip if it's a decimal like 3.14
             if text[i] == '.' and i > 0 and i < len(text) - 1 and text[i - 1].isdigit() and text[i + 1].isdigit():
                 continue
             return i
     return -1
+
 
 def parse_tool_call(text: str) -> Optional[Tuple[str, List[str]]]:
     """Extract and parse tool call from text."""
@@ -78,6 +80,7 @@ def parse_tool_call(text: str) -> Optional[Tuple[str, List[str]]]:
     logger.debug(f"Parsed tool name: {tool_name}, args: {args}")
     
     return tool_name, args
+
 
 class LLMClient:
     """Client for interacting with vLLM server using OpenAI-compatible API."""
@@ -317,7 +320,9 @@ class LLMClient:
             if "reset context" in transcript.lower():
                 self.reset_context()
                 if callback:
-                    await callback("Context has been reset. How can I help you?")
+                    reset_msg = "Context has been reset. How can I help you?"
+                    logger.info(f"TTS sent: {reset_msg}")
+                    await callback(reset_msg)
                 return
 
             # Check for timeout and reset if needed
@@ -406,6 +411,7 @@ class LLMClient:
                                     {"role": "assistant", "content": formatted_response}
                                 )
                                 if callback:
+                                    logger.info(f"TTS sent (LLM-formatted tool response): {formatted_response}")
                                     await callback(formatted_response)
                             else:
                                 # Check if translation is needed
@@ -418,6 +424,7 @@ class LLMClient:
                                     {"role": "assistant", "content": final_result}
                                 )
                                 if callback:
+                                    logger.info(f"TTS sent (tool response): {final_result}")
                                     await callback(final_result)
                             
                             # Clear buffer and return since we've handled the tool call
@@ -427,7 +434,9 @@ class LLMClient:
                         except ValueError as e:
                             logger.error(f"Tool execution error: {str(e)}")
                             if callback:
-                                await callback(str(e))
+                                error_msg = str(e)
+                                logger.info(f"TTS sent (tool error): {error_msg}")
+                                await callback(error_msg)
                             buffer = ""
                             return
                     
@@ -435,27 +444,25 @@ class LLMClient:
                     while True:
                         boundary = find_sentence_boundary(buffer)
                         if boundary == -1:
-                            # If no sentence boundary found and we've received the last chunk,
-                            # force flush the remaining buffer with a period
-                            if chunk.choices[0].finish_reason is not None and buffer.strip():
-                                sentence = buffer.strip()
-                                if not sentence.endswith(('.', '!', '?')):
-                                    sentence += "."
-                                if callback:
-                                    await callback(sentence)  # Use await instead of create_task
-                                buffer = ""
+                            # No complete sentence in buffer, keep reading
                             break
                         sentence = buffer[:boundary+1].strip()
                         if sentence and callback:
-                            await callback(sentence)  # Use await instead of create_task
+                            logger.info(f"TTS sent (partial sentence): {sentence}")
+                            await callback(sentence)
                         buffer = buffer[boundary+1:].strip()
-            
-            # Send any remaining text with proper punctuation
+                
+                # If we detect the final chunk, break from the loop
+                if chunk.choices[0].finish_reason is not None:
+                    break
+
+            # After streaming completes: flush any leftover text once
             if buffer.strip() and callback:
                 sentence = buffer.strip()
                 if not sentence.endswith(('.', '!', '?')):
                     sentence += "."
-                await callback(sentence)  # Use await instead of create_task
+                logger.info(f"TTS sent (final leftover): {sentence}")
+                await callback(sentence)
                 
             # Store conversation history if no tool was called
             if not parse_tool_call(full_response):
@@ -482,6 +489,7 @@ class LLMClient:
         except Exception as e:
             print(f"Error processing LLM request: {e}")
             return None
+
 
 # Example usage:
 if __name__ == "__main__":

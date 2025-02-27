@@ -95,11 +95,11 @@ class KokoroPipelineManager:
             print(f"Pipeline cache status: {len(self.pipelines)}/{self.max_pipelines} pipelines in use")
             
             # Initialize new pipeline
-            pipeline = KPipeline(lang_code=kokoro_lang_code)
-            pipeline.model = pipeline.model.to(device=self.device, dtype=torch.float32)
+            pipeline_obj = KPipeline(lang_code=kokoro_lang_code)
+            pipeline_obj.model = pipeline_obj.model.to(device=self.device, dtype=torch.float32)
             
             # Store in cache
-            self.pipelines[iso_lang_code] = pipeline
+            self.pipelines[iso_lang_code] = pipeline_obj
             
         return self.pipelines[iso_lang_code]
     
@@ -154,23 +154,16 @@ if not os.path.exists(kokoro_path):
 # Define Mira alternatives for trigger word detection (excluding 'mira' since it's handled by exact match)
 MIRA_ALTERNATIVES = frozenset(['nira', 'neera', 'miro', 'munira', 'miura', 'mihiro'])
 
-def find_trigger_word(msg: str, trigger: str) -> tuple[bool, str, str]:
+def find_trigger_word(msg: str, trigger: str):
     """
     Find the trigger word and return both the trigger portion and everything after it.
     
     This function handles both exact matches and alternative spellings of the trigger word.
     For example, if the trigger word is "mira", it will also detect variants like "nira", 
-    "neera", etc. - improving the assistant's responsiveness to mispronunciations.
+    "neera", etc.
     
-    Args:
-        msg (str): The transcribed message to search in
-        trigger (str): The trigger word to search for
-        
     Returns:
-        tuple[bool, str, str]: A tuple containing:
-            - found (bool): True if trigger or alternative was found
-            - trigger_portion (str): The actual trigger word as it appeared in the text
-            - text_after_trigger (str): The text after the trigger word
+        (found, trigger_portion, text_after)
     """
     msg_lower = msg.lower()
     trigger_lower = trigger.lower()
@@ -192,14 +185,12 @@ def find_trigger_word(msg: str, trigger: str) -> tuple[bool, str, str]:
         # Match found (either exact trigger or alternative)
         if trigger_len is None:  # No alternative was used
             trigger_len = len(trigger)
-        # Extract both parts: the trigger portion and everything after
         trigger_portion = msg[pos:pos + trigger_len]
         text_after = msg[pos + trigger_len:].strip()
         return True, trigger_portion, text_after
     
     return False, "", ""
 
-# Default trigger word from config
 DEFAULT_TRIGGER_WORD = CONFIG['assistant']['name'].lower()
 
 device = "cuda:0" if has_gpu else "cpu"
@@ -284,20 +275,11 @@ ASR_SUB_BATCH_SIZE = 2   # Process ASR in smaller sub-batches for responsiveness
 
 TTS_BATCH_TIMEOUT = 0.2  # Process TTS batch after 200ms of no new data
 TTS_MAX_BATCH_SIZE = 4   # Maximum items in TTS batch before forcing processing
-TTS_BUFFER_TIMEOUT = 0.2  # Flush TTS buffer after 200ms of no new data
+TTS_BUFFER_TIMEOUT = 0.2 # If partial text lingers in buffer, flush it after 200ms
 
 ################################################################################
 # AUDIO SERVER
 ################################################################################
-
-# Frame format:
-# Magic bytes (4 bytes): 0x4D495241 ("MIRA")
-# Frame type (1 byte): 
-#   0x01 = Audio data
-#   0x02 = End of utterance
-#   0x03 = VAD status
-# Frame length (4 bytes): Length of payload in bytes
-# Payload: Audio data (for type 0x01) or empty (for type 0x02)
 
 MAGIC_BYTES = b'MIRA'
 FRAME_TYPE_AUDIO = 0x01
@@ -317,11 +299,7 @@ class AudioServer:
     def __init__(self):
         with open('config.json', 'r') as f:
             self.config = json.load(f)
-            
-        # Initialize the ServerAudioCore; all VAD processing is done within it.
         self.audio_core = ServerAudioCore()
-        # (No noise floor calibration is applied here.)
-        
         self.enable_voice_filtering = False
 
         self.transcript_history = deque(maxlen=10)
@@ -376,7 +354,7 @@ class ClientSettingsManager:
     def set_client_language(self, client_id, language_code):
         """Set the language code for a client."""
         if not language_code:
-            language_code = "en"  # Default to English
+            language_code = "en"  # Default
         self.client_languages[client_id] = language_code
         print(f"Set language for client {client_id} to {language_code}")
         
@@ -387,13 +365,13 @@ class ClientSettingsManager:
     def set_client_trigger_word(self, client_id, trigger_word):
         """Set the trigger word for a client."""
         if not trigger_word:
-            trigger_word = DEFAULT_TRIGGER_WORD  # Default to config value
+            trigger_word = DEFAULT_TRIGGER_WORD
         self.client_trigger_words[client_id] = trigger_word.lower()
         print(f"Set trigger word for client {client_id} to '{trigger_word}'")
         
     def get_client_trigger_word(self, client_id):
         """Get the trigger word for a client."""
-        return self.client_trigger_words.get(client_id, DEFAULT_TRIGGER_WORD)  # Default to config value
+        return self.client_trigger_words.get(client_id, DEFAULT_TRIGGER_WORD)
 
     def remove_client(self, client_id):
         if client_id in self.client_settings:
@@ -409,13 +387,12 @@ class ClientSettingsManager:
 client_settings_manager = ClientSettingsManager()
 
 ################################################################################
-# TTS HELPER FUNCTIONS
+# TTS HELPER
 ################################################################################
 
 async def send_audio_frame(websocket, audio_data):
     """Send audio data using the framing protocol."""
     try:
-        # Convert float32 to int16
         audio_int16 = np.clip(audio_data * 32768.0, -32768, 32767).astype(np.int16)
         frame = create_frame(FRAME_TYPE_AUDIO, audio_int16.tobytes())
         await websocket.send(frame)
@@ -435,16 +412,15 @@ async def send_end_frame(websocket):
         import traceback
         print(traceback.format_exc())
 
-# Keep track of accumulated text for each client
-client_tts_buffers = {}
+client_tts_buffers = {}  # Per-client text buffers
+
+# A lock per client to avoid concurrency collisions
+client_tts_locks = {}
 
 def find_sentence_split_index(text: str) -> int:
     """
-    Returns the index of a valid sentence-ending punctuation character in text.
-    This function considers '.', '!', and '?' as potential sentence terminators,
-    but skips periods that appear to be part of a decimal number (i.e. when the
-    period is both preceded and followed by a digit).
-    If no valid sentence end is found, returns -1.
+    Returns the index of a sentence-ending punctuation in text (., !, ?), 
+    skipping decimal points used in numbers.
     """
     pattern = re.compile(r'(?<!\d)([.!?])(?=\s|$)')
     matches = list(pattern.finditer(text))
@@ -460,29 +436,21 @@ def find_sentence_split_index(text: str) -> int:
     return -1
 
 async def process_tts_batch(server, force=False):
-    """Process TTS requests sequentially."""
+    """Process all items in server.tts_batch sequentially."""
     if not server.tts_batch:
         return
 
     try:
-        # Process each TTS request sequentially
         while server.tts_batch:
             text, websocket, client_id = server.tts_batch.pop(0)
-            
-            # Get the client's language
+            print(f"[TTS-DEBUG] process_tts_batch: about to TTS '{text}' for client {client_id}")
+
             language_code = client_settings_manager.get_client_language(client_id)
             print(f"[TTS] Generating audio for client {client_id} in language {language_code}: {text}")
             
             try:
-                # Get the appropriate pipeline for this language
                 current_pipeline = pipeline_manager.get_pipeline(language_code)
-                
-                # Generate audio using pipeline call (which uses infer internally)
-                generator = current_pipeline(
-                    text,
-                    voice=f'{voice_name}', # _heart
-                    speed=1.0
-                )
+                generator = current_pipeline(text, voice=f'{voice_name}', speed=1.0)
                 
                 audio_list = []
                 for _, _, audio in generator:
@@ -497,7 +465,9 @@ async def process_tts_batch(server, force=False):
                         audio = np.concatenate(audio_list)
                         audio = np.clip(audio, -1.0, 1.0).astype(np.float32)
                     except Exception as e:
+                        print(f"[TTS] Error concatenating audio: {e}")
                         continue
+
                     FRAME_SIZE = 8192
                     tasks = []
 
@@ -518,80 +488,90 @@ async def process_tts_batch(server, force=False):
             except Exception as e:
                 print(f"[TTS] Error processing item: {e}")
                 continue
-
     except Exception as e:
         print(f"[TTS] Processing error: {e}")
     finally:
-        # Clear any remaining items
         server.tts_batch.clear()
-        server.tts_batch_clients = []
+        server.tts_batch_clients.clear()
         server.tts_batch_last_update = time.time()
 
-async def handle_tts_multi_utterances(websocket, text, client_id):
+# Helper function to flush complete sentences from the buffer
+async def flush_complete_sentences(websocket, client_id, force=False):
     """
-    Accumulates text until we have a complete sentence, then adds to TTS batch.
-    A sentence is considered complete if it ends with ., !, or ?.
-    Text will also be flushed if it has been in the buffer for longer than TTS_BUFFER_TIMEOUT.
+    Look in the client's buffer for full sentence boundaries. 
+    For each sentence, enqueue TTS and process it.
+    If 'force' is True, flush whatever is left (adding a period if needed).
     """
-    try:
-        # Initialize or get buffer for this client
-        if client_id not in client_tts_buffers:
-            client_tts_buffers[client_id] = ""
+    server = client_settings_manager.get_audio_server(client_id)
+    buffer = client_tts_buffers[client_id]
+    
+    while True:
+        idx = find_sentence_split_index(buffer)
+        if idx < 0:
+            break
+        # We found a boundary
+        sentence = buffer[:idx + 1].strip()
+        remainder = buffer[idx + 1:].strip()
         
-        # Force flush any existing buffer before adding new text
-        if client_tts_buffers[client_id].strip():
-            buffer = client_tts_buffers[client_id].strip()
-            if not buffer.endswith(('.', '!', '?')):
-                buffer += "."
-            server = client_settings_manager.get_audio_server(client_id)
-            server.tts_batch.append((buffer, websocket, client_id))
+        if sentence:
+            print(f"[TTS-DEBUG] flush_complete_sentences => sentence: '{sentence}'")
+            server.tts_batch.append((sentence, websocket, client_id))
             server.tts_batch_last_update = time.time()
             await process_tts_batch(server)
-            client_tts_buffers[client_id] = ""
         
-        # Append new text to buffer and update timestamp
-        client_tts_buffers[client_id] += text
-        buffer = client_tts_buffers[client_id]
-        client_settings_manager.client_buffer_times[client_id] = time.time()
-        
-        # Process any complete sentences
-        while True:
-            split_index = find_sentence_split_index(buffer)
-            if split_index < 0:
-                # If no sentence boundary found, check for timeout
-                now = time.time()
-                last_update = client_settings_manager.client_buffer_times.get(client_id, now)
-                if buffer.strip() and (now - last_update) > TTS_BUFFER_TIMEOUT:
-                    # Force flush with a period
-                    sentence = buffer.strip() + "."
-                    client_tts_buffers[client_id] = ""
-                    print(f"[TTS] Timeout flush: '{sentence}'")
-                    
-                    server = client_settings_manager.get_audio_server(client_id)
-                    server.tts_batch.append((sentence, websocket, client_id))
-                    server.tts_batch_last_update = time.time()
-                    await process_tts_batch(server)
-                break
-                
-            # Flush the sentence
-            sentence = buffer[:split_index + 1].strip()
-            remainder = buffer[split_index + 1:].strip()
-            
-            if sentence:
-                server = client_settings_manager.get_audio_server(client_id)
-                server.tts_batch.append((sentence, websocket, client_id))
-                server.tts_batch_last_update = time.time()
-                await process_tts_batch(server)
-            
-            buffer = remainder
-            client_tts_buffers[client_id] = remainder
-            
-            if remainder:
-                print(f"[TTS] Buffering remaining text: '{remainder}'")
-                client_settings_manager.client_buffer_times[client_id] = time.time()
+        buffer = remainder
     
+    client_tts_buffers[client_id] = buffer.strip()
+
+    if force and buffer.strip():
+        # Force flush leftover text
+        leftover = buffer.strip()
+        if not leftover.endswith(('.', '!', '?')):
+            leftover += "."
+        print(f"[TTS-DEBUG] force flushing leftover: '{leftover}'")
+        server.tts_batch.append((leftover, websocket, client_id))
+        server.tts_batch_last_update = time.time()
+        client_tts_buffers[client_id] = ""
+        await process_tts_batch(server)
+
+# handle_tts_multi_utterances with concurrency lock
+async def handle_tts_multi_utterances(websocket, text, client_id):
+    """
+    Accumulates text in a buffer until we have a complete sentence, 
+    then TTS is enqueued. We also do a forced flush on timeout or 
+    on disconnect if needed.
+    """
+    try:
+        if client_id not in client_tts_locks:
+            client_tts_locks[client_id] = asyncio.Lock()
+        lock = client_tts_locks[client_id]
+
+        async with lock:
+            if client_id not in client_tts_buffers:
+                client_tts_buffers[client_id] = ""
+            
+            before = client_tts_buffers[client_id]
+            client_tts_buffers[client_id] += text
+            print(f"[TTS-DEBUG] handle_tts_multi_utterances: buffer was '{before}', "
+                  f"appending '{text}' => now '{client_tts_buffers[client_id]}'")
+
+            client_settings_manager.client_buffer_times[client_id] = time.time()
+
+            # Try to flush any complete sentences
+            await flush_complete_sentences(websocket, client_id)
+
+            # Also handle the TTS_BUFFER_TIMEOUT scenario:
+            now = time.time()
+            last_update = client_settings_manager.client_buffer_times.get(client_id, now)
+            buffer = client_tts_buffers[client_id]
+            
+            # If there's leftover text but no punctuation & it sits for too long, flush forcibly
+            if buffer.strip() and (now - last_update) > TTS_BUFFER_TIMEOUT:
+                print(f"[TTS-DEBUG] TTS buffer timeout flush for client {client_id}, leftover '{buffer.strip()}'")
+                await flush_complete_sentences(websocket, client_id, force=True)
+
     except Exception as e:
-        print(f"TTS Error: {e}")
+        print(f"[TTS] Error in handle_tts_multi_utterances for client {client_id}: {e}")
         import traceback
         print(traceback.format_exc())
 
@@ -645,7 +625,6 @@ async def process_asr_batch(server, force=False):
     if not server.asr_batch:
         return
 
-    # Check if we should process the batch
     now = time.time()
     should_process = (
         force or
@@ -659,7 +638,6 @@ async def process_asr_batch(server, force=False):
     try:
         print(f"Processing ASR batch of size {len(server.asr_batch)}")
         
-        # Process in smaller sub-batches for better responsiveness
         for i in range(0, len(server.asr_batch), ASR_SUB_BATCH_SIZE):
             sub_batch = server.asr_batch[i:i + ASR_SUB_BATCH_SIZE]
             sub_batch_clients = server.asr_batch_clients[i:i + ASR_SUB_BATCH_SIZE]
@@ -671,66 +649,40 @@ async def process_asr_batch(server, force=False):
             
             try:
                 print("[ASR] Running Whisper model on audio...")
-                print(f"[ASR DEBUG] Processing batch of size: {len(sub_batch)}")
                 for idx, item in enumerate(sub_batch):
                     print(f"[ASR DEBUG] Batch item {idx} - Shape: {item['array'].shape}, "
                           f"Sample rate: {item['sampling_rate']}, "
                           f"Duration: {len(item['array'])/item['sampling_rate']:.2f}s")
                 
-                try:
-                    print("[ASR DEBUG] Pipeline input format:")
-                    if isinstance(sub_batch, list):
-                        print(f"[ASR DEBUG] Batch is a list of {len(sub_batch)} items")
-                        for i, item in enumerate(sub_batch):
-                            print(f"[ASR DEBUG] Item {i} keys: {item.keys()}")
-                    else:
-                        print(f"[ASR DEBUG] Batch is type: {type(sub_batch)}")
-                    
-                    # Process each audio input individually
-                    asr_results = []
-                    for item in sub_batch:
-                        try:
-                            print(f"[ASR DEBUG] Processing single audio input - Shape: {item['array'].shape}, "
-                                  f"Duration: {len(item['array'])/item['sampling_rate']:.2f}s")
-                            
-                            # Ensure we're working with numpy arrays
-                            audio_array = item["array"]
-                            if torch.is_tensor(audio_array):
-                                audio_array = audio_array.cpu().numpy()
-                            
-                            print(f"[ASR DEBUG] Input array shape: {audio_array.shape}")
-                            
-                            result = asr_pipeline(
-                                {"array": audio_array, "sampling_rate": item["sampling_rate"]},
-                                generate_kwargs={
-                                    "task": "transcribe",
-                                    "language": "en",
-                                    "use_cache": True,
-                                    "num_beams": 1,
-                                    "do_sample": False
-                                }
-                            )
-                            print(f"[ASR DEBUG] Single result: {result}")
-                            asr_results.append(result)
-                        except Exception as e:
-                            print(f"[ASR ERROR] Failed to process audio input: {e}")
-                            import traceback
-                            print(f"[ASR ERROR] Traceback:\n{traceback.format_exc()}")
-                except Exception as e:
-                    print(f"[ASR ERROR] Pipeline execution failed with error: {str(e)}")
-                    import traceback
-                    print(f"[ASR ERROR] Full traceback:\n{traceback.format_exc()}")
-                    raise
-                print(f"[ASR DEBUG] Pipeline completed")
-                print(f"[ASR DEBUG] Results type: {type(asr_results)}")
-                print(f"[ASR DEBUG] Results content: {asr_results}")
+                asr_results = []
+                for item in sub_batch:
+                    try:
+                        audio_array = item["array"]
+                        if torch.is_tensor(audio_array):
+                            audio_array = audio_array.cpu().numpy()
+                        result = asr_pipeline(
+                            {"array": audio_array, "sampling_rate": item["sampling_rate"]},
+                            generate_kwargs={
+                                "task": "transcribe",
+                                "language": "en",
+                                "use_cache": True,
+                                "num_beams": 1,
+                                "do_sample": False
+                            }
+                        )
+                        print(f"[ASR DEBUG] Single result: {result}")
+                        asr_results.append(result)
+                    except Exception as e:
+                        print(f"[ASR ERROR] Failed to process audio input: {e}")
+                        import traceback
+                        print(traceback.format_exc())
+                print(f"[ASR DEBUG] Pipeline completed, results: {asr_results}")
             except Exception as e:
                 print(f"[ASR ERROR] Pipeline failed: {e}")
                 import traceback
                 print(traceback.format_exc())
                 continue
 
-            # Process results for this sub-batch
             for idx, asr_result in enumerate(asr_results):
                 try:
                     client_id, websocket, speech_duration = sub_batch_clients[idx]
@@ -738,20 +690,12 @@ async def process_asr_batch(server, force=False):
                     confidence = asr_result.get("confidence", 0.0)
                     print(f"[ASR] Result {idx}: text='{transcript}', confidence={confidence}")
 
-                    if transcript and server.should_process_transcript(
-                        transcript,
-                        confidence,
-                        speech_duration
-                    ):
-                        # Get client's trigger word
+                    if transcript and server.should_process_transcript(transcript, confidence, speech_duration):
                         client_trigger_word = client_settings_manager.get_client_trigger_word(client_id)
-                        
-                        # Check if transcript contains the trigger word
                         found, trigger_portion, text_after = find_trigger_word(transcript, client_trigger_word)
                         
                         if found:
                             print(f"[ASR] Trigger word '{trigger_portion}' detected for client {client_id}")
-                            # Send the full transcript to the client
                             print(f"[ASR] {client_id}: '{transcript}'")
                             await websocket.send(transcript)
                         else:
@@ -763,7 +707,6 @@ async def process_asr_batch(server, force=False):
     except Exception as e:
         print(f"ASR Batch processing error: {e}")
     finally:
-        # Clear batch
         server.asr_batch.clear()
         server.asr_batch_clients.clear()
         server.asr_batch_last_update = time.time()
@@ -777,7 +720,6 @@ async def transcribe_audio(websocket):
         parsed_uri = urlparse(path_string)
         query_params = parse_qs(parsed_uri.query)
         
-        # Extract client ID
         client_id_list = query_params.get('client_id', [])
         if not client_id_list:
             print("No client_id in URI.")
@@ -785,15 +727,12 @@ async def transcribe_audio(websocket):
             return
         client_id = client_id_list[0]
         
-        # Extract language code
         language_list = query_params.get('language', [])
         language_code = language_list[0] if language_list else "en"
         
-        # Extract trigger word
         trigger_word_list = query_params.get('trigger_word', [])
         trigger_word = trigger_word_list[0] if trigger_word_list else DEFAULT_TRIGGER_WORD
         
-        # Set client language and trigger word
         client_settings_manager.set_client_language(client_id, language_code)
         client_settings_manager.set_client_trigger_word(client_id, trigger_word)
         
@@ -813,89 +752,61 @@ async def transcribe_audio(websocket):
             if isinstance(message, bytes):
                 # Microphone audio
                 try:
-                    # Process incoming audio through VAD
                     result = server.audio_core.process_audio(message)
-
-                    # Send VAD status to client for GUI
                     vad_frame = create_frame(FRAME_TYPE_VAD, bytes([1 if result['is_speech'] else 0]))
                     await websocket.send(vad_frame)
 
-                    # Process complete utterances
                     if result.get('is_complete'):
                         audio = result.get('audio')
                         if audio is not None and len(audio) > 0:
                             try:
                                 print("[ASR] Processing complete utterance...")
-                                print(f"[ASR DEBUG] Audio shape: {audio.shape}, duration: {len(audio)/16000:.2f}s")
-                                
-                                # Debug: Check utterance duration
                                 utterance_duration = len(audio) / 16000.0
                                 print(f"[DEBUG] Detected utterance duration: {utterance_duration:.2f}s")
-                                if utterance_duration < 1.0:
-                                    print("[WARNING] Utterance duration is very short; possible premature cutoff due to VAD settings.")
                                 
-                                try:
-                                    # Ensure audio is in the correct format and shape
-                                    if audio.dtype != np.float32:
-                                        audio = audio.astype(np.float32)
+                                if audio.dtype != np.float32:
+                                    audio = audio.astype(np.float32)
+                                if len(audio.shape) > 1:
+                                    if audio.shape[1] > 1:
+                                        audio = np.mean(audio, axis=1)
+                                    else:
+                                        audio = audio.squeeze()
+                                if len(audio.shape) != 1:
+                                    print(f"[ASR ERROR] Unexpected audio shape: {audio.shape}")
+                                    continue
+                                
+                                transcription = asr_pipeline(
+                                    {"array": audio, "sampling_rate": 16000},
+                                    generate_kwargs={
+                                        "task": "transcribe",
+                                        "language": "en",
+                                        "use_cache": True,
+                                        "num_beams": 1,
+                                        "do_sample": False
+                                    }
+                                )
+                                print(f"[ASR] Raw transcription: {transcription}")
+                                
+                                if transcription and server.should_process_transcript(
+                                    transcription["text"],
+                                    transcription.get("confidence", 0.0),
+                                    result['speech_duration']
+                                ):
+                                    transcript_text = transcription["text"]
+                                    print(f"[ASR] Final transcript for {client_id}: '{transcript_text}'")
+
+                                    client_trigger_word = client_settings_manager.get_client_trigger_word(client_id)
+                                    found, trigger_portion, text_after = find_trigger_word(transcript_text, client_trigger_word)
                                     
-                                    # Ensure audio is mono (average if multi-channel)
-                                    if len(audio.shape) > 1:
-                                        if audio.shape[1] > 1:
-                                            audio = np.mean(audio, axis=1)
-                                        else:
-                                            audio = audio.squeeze()
-                                    
-                                    # Verify audio is 1D
-                                    if len(audio.shape) != 1:
-                                        print(f"[ASR ERROR] Unexpected audio shape after processing: {audio.shape}")
-                                        continue
-                                    
-                                    print(f"[ASR DEBUG] Processed audio shape: {audio.shape}, range: [{audio.min():.3f}, {audio.max():.3f}]")
-                                    
-                                    print("[ASR] Running Whisper inference...")
-                                    transcription = asr_pipeline(
-                                        {"array": audio, "sampling_rate": 16000},
-                                        generate_kwargs={
-                                            "task": "transcribe",
-                                            "language": "en",
-                                            "use_cache": True,
-                                            "num_beams": 1,
-                                            "do_sample": False
-                                        }
-                                    )
-                                    
-                                    print(f"[ASR] Raw transcription: {transcription}")
-                                    
-                                    if transcription and server.should_process_transcript(
-                                        transcription["text"],
-                                        transcription.get("confidence", 0.0),
-                                        result['speech_duration']
-                                    ):
-                                        transcript_text = transcription["text"]
-                                        print(f"[ASR] Final transcript for {client_id}: '{transcript_text}'")
-                                        
-                                        # Get client's trigger word
-                                        client_trigger_word = client_settings_manager.get_client_trigger_word(client_id)
-                                        
-                                        # Check if transcript contains the trigger word
-                                        found, trigger_portion, text_after = find_trigger_word(transcript_text, client_trigger_word)
-                                        
-                                        if found:
-                                            print(f"[ASR] Trigger word '{trigger_portion}' detected for client {client_id}")
-                                            # Send the full transcript to the client
-                                            await websocket.send(transcript_text)
-                                        else:
-                                            print(f"[ASR] No trigger word detected in transcript for client {client_id}")
-                                        
-                                except Exception as e:
-                                    print(f"[ASR ERROR] Pipeline execution failed: {e}")
-                                    import traceback
-                                    print(f"[ASR ERROR] Full traceback:\n{traceback.format_exc()}")
+                                    if found:
+                                        print(f"[ASR] Trigger word '{trigger_portion}' detected for client {client_id}")
+                                        await websocket.send(transcript_text)
+                                    else:
+                                        print(f"[ASR] No trigger word detected in transcript for client {client_id}")
                             except Exception as e:
-                                print(f"ASR Error: {e}")
-                                server.asr_batch.clear()
-                                server.asr_batch_clients.clear()
+                                print(f"[ASR ERROR] Pipeline execution failed: {e}")
+                                import traceback
+                                print(f"[ASR ERROR] Full traceback:\n{traceback.format_exc()}")
                 except Exception as e:
                     print(f"Error processing audio from {client_id}: {e}")
 
@@ -913,10 +824,10 @@ async def transcribe_audio(websocket):
                     print(f"Client {client_id} exit requested.")
                     break
                 elif message.startswith("TTS:"):
-                    # Handle TTS request
-                    text = message[4:].strip()
-                    print(f"[TTS] Request from {client_id}: {text}")
-                    asyncio.create_task(handle_tts_multi_utterances(websocket, text, client_id))
+                    text_msg = message[4:].strip()
+                    print(f"[TTS] Request from {client_id}: {text_msg}")
+                    # [MODIFIED] Only one call; handle concurrency inside the function
+                    asyncio.create_task(handle_tts_multi_utterances(websocket, text_msg, client_id))
                 else:
                     print(f"Unknown message from {client_id}: {message}")
 
@@ -930,17 +841,19 @@ async def transcribe_audio(websocket):
         if server and server.audio_core:
             server.audio_core.close()
         if client_id:
-            # Process any remaining buffered text
+            # Force flush leftover text on disconnect
             if client_id in client_tts_buffers and client_tts_buffers[client_id].strip():
                 remaining = client_tts_buffers[client_id].strip()
                 print(f"[TTS] Processing remaining buffered text before disconnect: '{remaining}'")
                 try:
-                    await handle_tts_multi_utterances(websocket, remaining + ".", client_id)
-                    if server.tts_batch:
-                        await process_tts_batch(server, force=True)
+                    # Acquire lock to avoid concurrency issues
+                    if client_id not in client_tts_locks:
+                        client_tts_locks[client_id] = asyncio.Lock()
+                    async with client_tts_locks[client_id]:
+                        await flush_complete_sentences(websocket, client_id, force=True)
                 except Exception as e:
                     print(f"[TTS] Error processing final buffer: {e}")
-            
+
             if server.asr_batch:
                 await process_asr_batch(server, force=True)
             
@@ -966,8 +879,8 @@ async def cleanup_unused_pipelines_task():
             
             for lang, last_used in list(pipeline_manager.last_used.items()):
                 if last_used < unused_threshold and lang in pipeline_manager.pipelines:
-                    print(f"Cleaning up unused pipeline for {lang}, not used for {(current_time - last_used)/60:.1f} minutes")
-                    # Use the same cleanup logic as in _cleanup_if_needed
+                    print(f"Cleaning up unused pipeline for {lang}, "
+                          f"not used for {(current_time - last_used)/60:.1f} minutes")
                     try:
                         pipeline_manager.pipelines[lang].model = pipeline_manager.pipelines[lang].model.to("cpu")
                         del pipeline_manager.pipelines[lang]
@@ -984,7 +897,6 @@ async def cleanup_unused_pipelines_task():
 
 async def main():
     try:
-        # Start the cleanup task
         cleanup_task = asyncio.create_task(cleanup_unused_pipelines_task())
         
         host = CONFIG['server']['websocket']['host']

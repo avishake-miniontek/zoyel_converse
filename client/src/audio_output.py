@@ -102,14 +102,13 @@ class AudioOutput:
         """
         devices = sd.query_devices()
         output_devices = []
-        
-        logger.info("\n[AUDIO] Available output devices:")
+
+        logger.info("\n[AUDIO] All available devices:")
         for i, dev in enumerate(devices):
-            # Only consider devices with output capability
+            logger.info(f"   {i} {dev['name']}, ({dev['max_input_channels']} in, {dev['max_output_channels']} out)")
             if dev['max_output_channels'] > 0:
-                logger.info(f"   {i} {dev['name']}, ALSA ({dev['max_input_channels']} in, {dev['max_output_channels']} out)")
                 output_devices.append((i, dev))
-                
+
         if not output_devices:
             raise RuntimeError("[AUDIO] No devices with output channels found.")
                 

@@ -326,6 +326,9 @@ WEBSOCKET_API_SECRET_KEY=your_secure_key_here
 MODEL_NAME=gpt-3.5-turbo  # Can be an OpenAI model or path to local model
 API_SECRET_KEY=your_api_key_here
 API_BASE=https://api.openai.com/v1  # Or URL to local API server
+
+# Language Configuration
+LANGUAGE=en  # Language code (en, es, fr, zh, etc.)
 ```
 
 ### Configuration Files (config.json)
@@ -396,12 +399,21 @@ The following languages are currently supported:
 
 ### Language Configuration
 
-Language selection is configured on the client side in the client's `config.json` file:
+Language selection can be configured either through the environment variable or in the client's `config.json` file. The environment variable takes precedence over the config file setting.
 
+#### Using Environment Variable (Recommended)
+In the client's `.env` file:
+```bash
+# Language setting (en, es, fr, zh, etc.)
+LANGUAGE=en
+```
+
+#### Using Configuration File (Fallback)
+In the client's `config.json` file:
 ```json
 "llm": {
     "prompt": {
-        "language": "en",  // Set this to the desired ISO language code (en, es, fr, etc.)
+        "language": "en",  // This will be used if LANGUAGE is not set in .env
         "custom_path": null,
         "directory": "prompts"
     }

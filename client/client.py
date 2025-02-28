@@ -122,6 +122,7 @@ with open('config.json', 'r') as f:
     CONFIG['server']['websocket']['host'] = os.getenv("WEBSOCKET_HOST", CONFIG['server']['websocket']['host'])
     CONFIG['server']['websocket']['port'] = os.getenv("WEBSOCKET_PORT", CONFIG['server']['websocket']['port'])
     CONFIG['server']['websocket']['api_key'] = os.getenv("WEBSOCKET_API_SECRET_KEY", CONFIG['server']['websocket']['api_key'])
+    CONFIG['llm']['prompt']['language'] = os.getenv("LANGUAGE", CONFIG['llm']['prompt']['language'])
 
 # Trigger word detection is now handled on the server side
 

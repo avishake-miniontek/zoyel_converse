@@ -135,7 +135,8 @@ SERVER_PORT = CONFIG['server']['websocket']['port']
 CLIENT_ID = uuid.uuid4()
 # Include language setting and trigger word in the server URI
 LANGUAGE_CODE = CONFIG['llm']['prompt']['language']
-TRIGGER_WORD = CONFIG['assistant']['name']
+# TRIGGER_WORD = CONFIG['assistant']['name']
+TRIGGER_WORD = "__none__" 
 SERVER_URI = f"ws://{SERVER_HOST}:{SERVER_PORT}?api_key={API_KEY}&client_id={CLIENT_ID}&language={LANGUAGE_CODE}&trigger_word={TRIGGER_WORD}"
 
 logger.info(f"Loaded trigger word from config: '{TRIGGER_WORD}'")

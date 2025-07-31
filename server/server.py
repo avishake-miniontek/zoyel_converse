@@ -165,6 +165,9 @@ def find_trigger_word(msg: str, trigger: str):
     Returns:
         (found, trigger_portion, text_after)
     """
+    if not trigger or trigger.lower() == "__none__":
+        return True, "", msg.strip()
+    
     msg_lower = msg.lower()
     trigger_lower = trigger.lower()
     pos = msg_lower.find(trigger_lower)

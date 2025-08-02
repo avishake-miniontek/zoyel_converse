@@ -313,6 +313,24 @@ class LLMClient:
         self.last_message_time = 0
         print("\n[Context Reset] Conversation history cleared.")
 
+    def _sanitize_conversation_history(self):
+        """
+        Ensures conversation history alternates roles correctly.
+        If consecutive messages from the same role are found,
+        merge or keep only the latest to maintain conversation flow. 
+        """
+        sanitized = []
+        prev = None
+        for msg in self.conversation_history:
+            if msg['role'] == prev:
+                # Merge content or replace last message
+                # Here we replace the last message with current one
+                sanitized[-1] = msg
+            else:
+                sanitized.append(msg)
+                prev = msg['role']
+        self.conversation_history = sanitized
+
     async def process_trigger(self, transcript: str, callback=None):
         """
         Process a triggered transcript with the LLM.
@@ -338,6 +356,9 @@ class LLMClient:
             # Get system prompt from loaded prompt data
             system_prompt = self.get_system_prompt()
             logger.info(f"Using {self.prompt_data.get('language_name', 'unknown')} prompt")
+
+            # Sanitize conversation history to fix role alternation issues
+            self._sanitize_conversation_history()
 
             # Prepare messages with conversation history
             messages = [{"role": "system", "content": system_prompt}]

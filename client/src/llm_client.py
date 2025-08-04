@@ -102,6 +102,15 @@ class LLMClient:
         )
         # Initialize conversation settings from config
         self.conversation_history: List[Dict[str, str]] = []
+        @property
+        def conversation_history(self) -> List[Dict[str, str]]:
+            return self._conversation_history
+
+        @conversation_history.setter
+        def conversation_history(self, history: List[Dict[str, str]]):
+            self._conversation_history = history
+            logger.debug(f"Conversation history updated with {len(history)} messages")
+        
         self.last_message_time: float = 0
         self.context_timeout: float = self.config["llm"]["conversation"]["context_timeout"]
         

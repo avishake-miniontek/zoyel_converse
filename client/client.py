@@ -132,7 +132,16 @@ SERVER_HOST = CONFIG['server']['websocket']['host']
 SERVER_PORT = CONFIG['server']['websocket']['port']
 
 # Generate unique client ID and build the server URI.
-CLIENT_ID = uuid.uuid4()
+# CLIENT_ID = uuid.uuid4()
+CLIENT_ID_FILE = 'client_id.txt'
+if os.path.exists(CLIENT_ID_FILE):
+    with open(CLIENT_ID_FILE, 'r') as f:
+        CLIENT_ID = uuid.UUID(f.read().strip())
+else:
+    CLIENT_ID = uuid.uuid4()
+    with open(CLIENT_ID_FILE, 'w') as f:
+        f.write(str(CLIENT_ID))
+
 # Include language setting and trigger word in the server URI
 LANGUAGE_CODE = CONFIG['llm']['prompt']['language']
 # TRIGGER_WORD = CONFIG['assistant']['name']
@@ -267,8 +276,8 @@ async def process_text_messages(handler):
     Process text messages received from the server.
     
     This function handles transcriptions coming from the server's ASR system.
-    The server only sends transcripts that contain the trigger word, so we can
-    process all received messages directly with the LLM.
+    It differentiates between historical messages (JSON array) for context loading
+    and new messages (plain text) for LLM processing and TTS.
     
     Args:
         handler (MessageHandler): Message handler containing the text queue
@@ -280,6 +289,18 @@ async def process_text_messages(handler):
             if msg == "TTS_ERROR":
                 logger.error("Server TTS generation failed.")
                 continue
+
+            try:
+                # Try to parse message as JSON (historical messages)
+                data = json.loads(msg)
+                if isinstance(data, list):
+                    # Historical messages received as a JSON array
+                    handler.llm_client.conversation_history = data
+                    print("\n[CLIENT] Loaded historical conversation context.")
+                    continue
+            except json.JSONDecodeError:
+                # Not JSON, treat as a new plain-text message
+                pass
 
             # Split message into sentences for better handling
             sentences = re.split(r'(?<=[.!?])\s+', msg.strip())

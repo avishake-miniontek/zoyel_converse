@@ -15,6 +15,8 @@ from collections import deque
 from urllib.parse import urlparse, parse_qs
 import datetime
 import re
+import asyncpg
+import uuid
 
 ################################################################################
 # GPU SELECTION
@@ -720,6 +722,7 @@ async def process_asr_batch(server, force=False):
 async def transcribe_audio(websocket):
     client_id = None
     server = None
+    session_id = None
 
     try:
         path_string = getattr(websocket.request, 'path', None) or getattr(websocket, 'path', None)
@@ -735,10 +738,21 @@ async def transcribe_audio(websocket):
         
         language_list = query_params.get('language', [])
         language_code = language_list[0] if language_list else "en"
-        
+
+        # New: get session_id from query params
+        session_id_list = query_params.get('session_id', [])
+        if session_id_list:
+            try:
+                session_id = uuid.UUID(session_id_list[0])
+            except Exception:
+                session_id = None
+
         trigger_word_list = query_params.get('trigger_word', [])
         trigger_word = trigger_word_list[0] if trigger_word_list else DEFAULT_TRIGGER_WORD
-        
+
+        # Create or validate session
+        session_id = await get_or_create_session(client_id, language_code, session_id)
+
         client_settings_manager.set_client_language(client_id, language_code)
         client_settings_manager.set_client_trigger_word(client_id, trigger_word)
         
@@ -750,9 +764,17 @@ async def transcribe_audio(websocket):
             return
         
         await websocket.send("AUTH_OK")
-        print(f"Client authenticated: {client_id}, Language: {language_code}")
+        print(f"Client authenticated: {client_id}, Language: {language_code}, Session: {session_id}")
 
         server = client_settings_manager.get_audio_server(client_id)
+
+        # Send previous messages for session to client
+        previous_messages = await load_session_messages(session_id)
+        for msg in previous_messages:
+            # Compose message string for client
+            # For transcripts and TTS text, send as plain text
+            if msg['message_type'] in ('transcript', 'tts_text') and msg['content']:
+                await websocket.send(msg['content'])
 
         async for message in websocket:
             if isinstance(message, bytes):
@@ -801,6 +823,9 @@ async def transcribe_audio(websocket):
                                     transcript_text = transcription["text"]
                                     print(f"[ASR] Final transcript for {client_id}: '{transcript_text}'")
 
+                                    # Save transcript message
+                                    await save_message(session_id, 'client', 'transcript', transcript_text)
+
                                     client_trigger_word = client_settings_manager.get_client_trigger_word(client_id)
                                     found, trigger_portion, text_after = find_trigger_word(transcript_text, client_trigger_word)
                                     
@@ -832,6 +857,10 @@ async def transcribe_audio(websocket):
                 elif message.startswith("TTS:"):
                     text_msg = message[4:].strip()
                     print(f"[TTS] Request from {client_id}: {text_msg}")
+
+                    # Save TTS request text
+                    await save_message(session_id, 'client', 'tts_text', text_msg)
+
                     # [MODIFIED] Only one call; handle concurrency inside the function
                     asyncio.create_task(handle_tts_multi_utterances(websocket, text_msg, client_id))
                 else:
@@ -869,6 +898,94 @@ async def transcribe_audio(websocket):
         print(f"Cleaned up for client {client_id}")
 
 ################################################################################
+# DATABASE
+################################################################################
+
+# Add DB connection parameters
+DB_USER = 'postgres'
+DB_PASSWORD = '1234'
+DB_HOST = 'localhost'
+DB_PORT = 5432
+DB_NAME = 'zoyel_converse'
+
+async def init_db_pool():
+    pool = await asyncpg.create_pool(
+        user=DB_USER,
+        password=DB_PASSWORD,
+        database=DB_NAME,
+        host=DB_HOST,
+        port=DB_PORT
+    )
+    async with pool.acquire() as conn:
+        # Create sessions table
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id UUID PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                language_code TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                last_active TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        ''')
+        # Create messages table
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS messages (
+                message_id SERIAL PRIMARY KEY,
+                session_id UUID REFERENCES sessions(session_id) ON DELETE CASCADE,
+                sender TEXT NOT NULL,
+                message_type TEXT NOT NULL,
+                content TEXT,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        ''')
+    return pool
+
+# Global DB pool
+DB_POOL = None
+
+# Helper to create or get session
+async def get_or_create_session(client_id, language_code, session_id=None):
+    async with DB_POOL.acquire() as conn:
+        if session_id:
+            # Validate session exists
+            row = await conn.fetchrow('SELECT session_id FROM sessions WHERE session_id = $1', session_id)
+            if row:
+                # Update last_active
+                await conn.execute('UPDATE sessions SET last_active = NOW() WHERE session_id = $1', session_id)
+                return session_id
+            else:
+                # Session not found, create new
+                session_id = uuid.uuid4()
+                await conn.execute(
+                    'INSERT INTO sessions(session_id, client_id, language_code) VALUES($1, $2, $3)',
+                    session_id, client_id, language_code
+                )
+                return session_id
+        else:
+            # No session_id provided, create new
+            session_id = uuid.uuid4()
+            await conn.execute(
+                'INSERT INTO sessions(session_id, client_id, language_code) VALUES($1, $2, $3)',
+                session_id, client_id, language_code
+            )
+            return session_id
+
+async def save_message(session_id, sender, message_type, content):
+    async with DB_POOL.acquire() as conn:
+        await conn.execute(
+            'INSERT INTO messages(session_id, sender, message_type, content) VALUES($1, $2, $3, $4)',
+            session_id, sender, message_type, content
+        )
+
+async def load_session_messages(session_id):
+    async with DB_POOL.acquire() as conn:
+        rows = await conn.fetch(
+            'SELECT sender, message_type, content, created_at FROM messages WHERE session_id = $1 ORDER BY created_at ASC',
+            session_id
+        )
+        return rows
+
+################################################################################
 # MAIN
 ################################################################################
 
@@ -902,7 +1019,11 @@ async def cleanup_unused_pipelines_task():
             await asyncio.sleep(600)  # Wait before trying again
 
 async def main():
+    global DB_POOL
     try:
+        DB_POOL = await init_db_pool()
+        print("Database connection pool initialized.")
+
         cleanup_task = asyncio.create_task(cleanup_unused_pipelines_task())
         
         host = CONFIG['server']['websocket']['host']

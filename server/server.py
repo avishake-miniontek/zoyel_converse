@@ -751,7 +751,7 @@ async def transcribe_audio(websocket):
         trigger_word = trigger_word_list[0] if trigger_word_list else DEFAULT_TRIGGER_WORD
 
         # Create or validate session
-        session_id = await get_or_create_session(client_id, language_code, session_id)
+        session_id = await get_or_create_session(client_id, language_code)
 
         client_settings_manager.set_client_language(client_id, language_code)
         client_settings_manager.set_client_trigger_word(client_id, trigger_word)
@@ -769,12 +769,14 @@ async def transcribe_audio(websocket):
         server = client_settings_manager.get_audio_server(client_id)
 
         # Send previous messages for session to client
+        # Send previous messages for session to client as a JSON array
         previous_messages = await load_session_messages(session_id)
-        for msg in previous_messages:
-            # Compose message string for client
-            # For transcripts and TTS text, send as plain text
-            if msg['message_type'] in ('transcript', 'tts_text') and msg['content']:
-                await websocket.send(msg['content'])
+        if previous_messages:
+            historical_data = json.dumps([{
+                'role': 'user' if msg['sender'] == 'client' else 'assistant',
+                'content': msg['content']
+            } for msg in previous_messages if msg['message_type'] in ('transcript', 'tts_text') and msg['content']])
+            await websocket.send(historical_data)
 
         async for message in websocket:
             if isinstance(message, bytes):
@@ -857,11 +859,7 @@ async def transcribe_audio(websocket):
                 elif message.startswith("TTS:"):
                     text_msg = message[4:].strip()
                     print(f"[TTS] Request from {client_id}: {text_msg}")
-
-                    # Save TTS request text
-                    await save_message(session_id, 'client', 'tts_text', text_msg)
-
-                    # [MODIFIED] Only one call; handle concurrency inside the function
+                    await save_message(session_id, 'assistant', 'tts_text', text_msg)
                     asyncio.create_task(handle_tts_multi_utterances(websocket, text_msg, client_id))
                 else:
                     print(f"Unknown message from {client_id}: {message}")
@@ -944,31 +942,28 @@ async def init_db_pool():
 DB_POOL = None
 
 # Helper to create or get session
-async def get_or_create_session(client_id, language_code, session_id=None):
+async def get_or_create_session(client_id, language_code):
     async with DB_POOL.acquire() as conn:
-        if session_id:
-            # Validate session exists
-            row = await conn.fetchrow('SELECT session_id FROM sessions WHERE session_id = $1', session_id)
-            if row:
-                # Update last_active
-                await conn.execute('UPDATE sessions SET last_active = NOW() WHERE session_id = $1', session_id)
-                return session_id
-            else:
-                # Session not found, create new
-                session_id = uuid.uuid4()
-                await conn.execute(
-                    'INSERT INTO sessions(session_id, client_id, language_code) VALUES($1, $2, $3)',
-                    session_id, client_id, language_code
-                )
-                return session_id
+        # Check for an existing session with this client_id
+        row = await conn.fetchrow(
+            'SELECT session_id FROM sessions WHERE client_id = $1',
+            client_id
+        )
+        if row:
+            session_id = row['session_id']
+            # Update last_active timestamp
+            await conn.execute(
+                'UPDATE sessions SET last_active = NOW(), language_code = $1 WHERE session_id = $2',
+                language_code, session_id
+            )
         else:
-            # No session_id provided, create new
+            # Create a new session if none exists
             session_id = uuid.uuid4()
             await conn.execute(
                 'INSERT INTO sessions(session_id, client_id, language_code) VALUES($1, $2, $3)',
                 session_id, client_id, language_code
             )
-            return session_id
+        return session_id
 
 async def save_message(session_id, sender, message_type, content):
     async with DB_POOL.acquire() as conn:

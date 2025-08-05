@@ -772,10 +772,7 @@ async def transcribe_audio(websocket):
         # Send previous messages for session to client as a JSON array
         previous_messages = await load_session_messages(session_id)
         if previous_messages:
-            historical_data = json.dumps([{
-                'role': 'user' if msg['sender'] == 'client' else 'assistant',
-                'content': msg['content']
-            } for msg in previous_messages if msg['message_type'] in ('transcript', 'tts_text') and msg['content']])
+            historical_data = json.dumps(previous_messages)
             await websocket.send(historical_data)
 
         async for message in websocket:
@@ -899,7 +896,7 @@ async def transcribe_audio(websocket):
 # DATABASE
 ################################################################################
 
-# Add DB connection parameters
+# DATABASE CONFIGURATION
 DB_USER = 'postgres'
 DB_PASSWORD = '1234'
 DB_HOST = 'localhost'
@@ -966,19 +963,68 @@ async def get_or_create_session(client_id, language_code):
         return session_id
 
 async def save_message(session_id, sender, message_type, content):
+    """
+    Save a message to the database, merging with the last message if the sender is the same.
+    """
     async with DB_POOL.acquire() as conn:
-        await conn.execute(
-            'INSERT INTO messages(session_id, sender, message_type, content) VALUES($1, $2, $3, $4)',
-            session_id, sender, message_type, content
+        # Fetch the last message for this session
+        last_msg = await conn.fetchrow(
+            'SELECT message_id, sender, content FROM messages WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1',
+            session_id
         )
+        
+        if last_msg and last_msg['sender'] == sender:
+            # Merge content with the last message
+            merged_content = last_msg['content'] + " " + content
+            await conn.execute(
+                'UPDATE messages SET content = $1, created_at = NOW() WHERE message_id = $2',
+                merged_content, last_msg['message_id']
+            )
+            print(f"[DB] Merged message for session {session_id}: {merged_content}")
+        else:
+            # Insert new message
+            await conn.execute(
+                'INSERT INTO messages(session_id, sender, message_type, content) VALUES($1, $2, $3, $4)',
+                session_id, sender, message_type, content
+            )
+            print(f"[DB] Saved new message for session {session_id}: {content}")
 
 async def load_session_messages(session_id):
+    """
+    Load messages from the database and sanitize them to ensure role alternation.
+    """
     async with DB_POOL.acquire() as conn:
         rows = await conn.fetch(
             'SELECT sender, message_type, content, created_at FROM messages WHERE session_id = $1 ORDER BY created_at ASC',
             session_id
         )
-        return rows
+        # Convert to list of dicts
+        messages = [
+            {
+                'role': 'user' if row['sender'] == 'client' else 'assistant',
+                'content': row['content']
+            }
+            for row in rows
+            if row['message_type'] in ('transcript', 'tts_text') and row['content']
+        ]
+        
+        # Sanitize messages
+        if not messages:
+            return messages
+        
+        sanitized = [messages[0].copy()]
+        merged_count = 0
+        for msg in messages[1:]:
+            if msg['role'] == sanitized[-1]['role']:
+                sanitized[-1]['content'] += " " + msg['content']
+                merged_count += 1
+            else:
+                sanitized.append(msg.copy())
+        
+        if merged_count > 0:
+            print(f"[DB] Sanitized {merged_count} consecutive messages for session {session_id}")
+        
+        return sanitized
 
 ################################################################################
 # MAIN

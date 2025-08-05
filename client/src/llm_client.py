@@ -102,15 +102,6 @@ class LLMClient:
         )
         # Initialize conversation settings from config
         self.conversation_history: List[Dict[str, str]] = []
-        @property
-        def conversation_history(self) -> List[Dict[str, str]]:
-            return self._conversation_history
-
-        @conversation_history.setter
-        def conversation_history(self, history: List[Dict[str, str]]):
-            self._conversation_history = history
-            logger.debug(f"Conversation history updated with {len(history)} messages")
-        
         self.last_message_time: float = 0
         self.context_timeout: float = self.config["llm"]["conversation"]["context_timeout"]
         
@@ -120,6 +111,16 @@ class LLMClient:
         # Load prompt based on configuration
         self.prompt_data = self._load_prompt()
         logger.info(f"Loaded prompt for language: {self.prompt_data.get('language_name', 'unknown')}")
+
+    @property
+    def conversation_history(self) -> List[Dict[str, str]]:
+        return self._conversation_history
+
+    @conversation_history.setter
+    def conversation_history(self, history: List[Dict[str, str]]):
+        self._conversation_history = history
+        self._sanitize_conversation_history()
+        logger.debug(f"Conversation history updated and sanitized with {len(self._conversation_history)} messages")
         
     def _load_prompt(self) -> Dict[str, Any]:
         """
@@ -326,19 +327,21 @@ class LLMClient:
         """
         Ensures conversation history alternates roles correctly.
         If consecutive messages from the same role are found,
-        merge or keep only the latest to maintain conversation flow. 
+        merge their content to maintain conversation flow.
         """
-        sanitized = []
-        prev = None
-        for msg in self.conversation_history:
-            if msg['role'] == prev:
-                # Merge content or replace last message
-                # Here we replace the last message with current one
-                sanitized[-1] = msg
+        if not self._conversation_history:
+            return
+        sanitized = [self._conversation_history[0].copy()]
+        merged_count = 0
+        for msg in self._conversation_history[1:]:
+            if msg['role'] == sanitized[-1]['role']:
+                sanitized[-1]['content'] += " " + msg['content']
+                merged_count += 1
             else:
-                sanitized.append(msg)
-                prev = msg['role']
-        self.conversation_history = sanitized
+                sanitized.append(msg.copy())
+        self._conversation_history = sanitized
+        if merged_count > 0:
+            logger.warning(f"Sanitized conversation history: merged {merged_count} consecutive messages")
 
     async def process_trigger(self, transcript: str, callback=None):
         """
@@ -367,7 +370,7 @@ class LLMClient:
             logger.info(f"Using {self.prompt_data.get('language_name', 'unknown')} prompt")
 
             # Sanitize conversation history to fix role alternation issues
-            self._sanitize_conversation_history()
+            # self._sanitize_conversation_history()
 
             # Prepare messages with conversation history
             messages = [{"role": "system", "content": system_prompt}]
@@ -393,7 +396,7 @@ class LLMClient:
             # Stream the response while collecting it
             buffer = ""
             full_response = ""
-            
+
             async for chunk in stream:
                 delta = chunk.choices[0].delta
                 content = None
@@ -416,7 +419,7 @@ class LLMClient:
                             tool = self.tool_registry.get_tool(tool_name)
                             if not tool:
                                 raise ValueError(f"Tool '{tool_name}' not found")
-                                
+
                             result = await self.tool_registry.execute_tool(tool_name, args)
                             logger.debug(f"Tool execution result: {result}")
                             
@@ -462,7 +465,6 @@ class LLMClient:
                             # Clear buffer and return since we've handled the tool call
                             buffer = ""
                             return
-                            
                         except ValueError as e:
                             logger.error(f"Tool execution error: {str(e)}")
                             if callback:
@@ -517,7 +519,7 @@ class LLMClient:
                     break
 
             print()
-            
+
         except Exception as e:
             print(f"Error processing LLM request: {e}")
             return None

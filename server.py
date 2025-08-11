@@ -22,6 +22,7 @@ import time
 import io
 import base64
 import wave
+import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, asdict
@@ -254,7 +255,9 @@ class VoiceProcessor:
 
             # Convert to WAV bytes
             audio_io = io.BytesIO()
-            torchaudio.save(audio_io, torch.tensor(audio).unsqueeze(0), 24000, format="wav")
+            # torchaudio.save(audio_io, torch.tensor(audio).unsqueeze(0), 24000, format="wav")
+            pcm16 = (audio * 32767).astype(np.int16)
+            torchaudio.save(audio_io, torch.from_numpy(pcm16).unsqueeze(0), 24000, format="wav")
             return audio_io.getvalue()
 
         except Exception as e:

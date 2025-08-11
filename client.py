@@ -332,6 +332,7 @@ class VoiceAIClientGUI:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Voice AI Client")
+        self.root.minsize(height=600, width=800)
         self.root.geometry("1000x700")
         self.root.configure(bg="#1e1e1e")
         

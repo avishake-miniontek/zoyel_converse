@@ -31,17 +31,21 @@ import aiohttp
 import threading
 from pathlib import Path
 
-# External dependencies (install with: pip install openai faster-whisper kokoro-tts torch torchaudio)
+# External dependencies (install with: pip install openai transformers torch torchaudio kokoro-tts)
 try:
     from openai import AsyncOpenAI
-    from faster_whisper import WhisperModel
+    from transformers import pipeline
     import torch
     import torchaudio
     from kokoro import KPipeline
 except ImportError as e:
     print(f"Missing dependency: {e}")
-    print("Install with: pip install openai faster-whisper kokoro-tts torch torchaudio")
+    print("Install with: pip install openai transformers torch torchaudio kokoro-tts")
     exit(1)
+
+# Register SQLite adapters for datetime
+sqlite3.register_adapter(datetime, lambda val: val.isoformat())
+sqlite3.register_converter("TIMESTAMP", lambda val: datetime.fromisoformat(val.decode('utf-8') if isinstance(val, bytes) else val))
 
 # Configure logging
 logging.basicConfig(
@@ -84,7 +88,7 @@ class DatabaseManager:
     
     def init_database(self):
         """Initialize SQLite database with required tables"""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
@@ -131,7 +135,7 @@ class DatabaseManager:
     
     def save_session(self, session: Session):
         """Save or update session in database"""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO sessions 
                 (id, user_id, created_at, last_activity, context, model_name, temperature, max_tokens, is_active)
@@ -145,7 +149,7 @@ class DatabaseManager:
     
     def load_session(self, session_id: str) -> Optional[Session]:
         """Load session from database"""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES) as conn:
             cursor = conn.execute("""
                 SELECT * FROM sessions WHERE id = ? AND is_active = 1
             """, (session_id,))
@@ -161,7 +165,7 @@ class DatabaseManager:
     
     def save_message(self, message: Message):
         """Save message to database"""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES) as conn:
             conn.execute("""
                 INSERT INTO messages 
                 (id, session_id, role, content, timestamp, message_type, metadata, audio_data)
@@ -176,7 +180,7 @@ class DatabaseManager:
     
     def get_session_messages(self, session_id: str, limit: int = 50) -> List[Message]:
         """Get recent messages for a session"""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES) as conn:
             cursor = conn.execute("""
                 SELECT * FROM messages 
                 WHERE session_id = ? 
@@ -195,14 +199,14 @@ class DatabaseManager:
             return list(reversed(messages))
 
 class VoiceProcessor:
-    def __init__(self):
+    def __init__(self, stt_model: str = "openai/whisper-large-v3-turbo"):
         """Initialize voice processing models"""
         logger.info("Initializing voice processing models...")
         
-        # Initialize Faster-Whisper for STT
+        # Initialize Hugging Face Whisper pipeline for STT
         try:
-            self.whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
-            logger.info("Faster-Whisper model loaded successfully")
+            self.stt_pipeline = pipeline("automatic-speech-recognition", model=stt_model)
+            logger.info(f"Hugging Face Whisper model '{stt_model}' loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load Whisper model: {e}")
             raise
@@ -216,23 +220,21 @@ class VoiceProcessor:
             raise
     
     async def speech_to_text(self, audio_data: bytes) -> str:
-        """Convert speech audio to text using Faster-Whisper"""
+        """Convert speech audio to text using Hugging Face Whisper pipeline"""
         try:
-            # Save audio data to temporary file
-            temp_audio = io.BytesIO(audio_data)
-            
             # Process with Whisper in thread to avoid blocking
             loop = asyncio.get_event_loop()
-            segments, _ = await loop.run_in_executor(
-                None, self.whisper_model.transcribe, temp_audio
-            )
             
-            # Extract text from segments
-            text = ""
-            for segment in segments:
-                text += segment.text + " "
+            def transcribe():
+                audio_io = io.BytesIO(audio_data)
+                waveform, sample_rate = torchaudio.load(audio_io)
+                audio_array = waveform.squeeze().numpy()
+                result = self.stt_pipeline(audio_array)
+                return result['text'].strip()
             
-            return text.strip()
+            text = await loop.run_in_executor(None, transcribe)
+            
+            return text
         
         except Exception as e:
             logger.error(f"Speech-to-text error: {e}")
@@ -313,7 +315,7 @@ class VoiceAIServer:
         self.host = host
         self.port = port
         self.db = DatabaseManager()
-        self.voice_processor = VoiceProcessor()
+        self.voice_processor = VoiceProcessor()  # You can pass a different model here, e.g., VoiceProcessor("openai/whisper-small")
         self.mcp = ModelContextProtocol()
         self.sessions: Dict[str, Session] = {}
         self.connected_clients: Dict[str, websockets.WebSocketServerProtocol] = {}
@@ -536,7 +538,7 @@ class VoiceAIServer:
                     history.append({
                         "role": msg.role,
                         "content": msg.content,
-                        "timestamp": msg.timestamp.format(),
+                        "timestamp": msg.timestamp.isoformat(),
                         "message_type": msg.message_type
                     })
                 

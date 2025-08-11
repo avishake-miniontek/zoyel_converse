@@ -203,6 +203,7 @@ class WebSocketClient:
         self.max_reconnect_attempts = 5
         self.reconnect_delay = 2
         self.message_queue = queue.Queue()
+        self.loop = None
         
         # Start connection in background
         self.connection_task = None
@@ -210,20 +211,26 @@ class WebSocketClient:
     
     def start_connection(self):
         """Start WebSocket connection"""
-        if self.connection_task and not self.connection_task.done():
+        if self.connection_task and self.connection_task.is_alive():
             return
-        
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
+
         def run_connection():
+            # Create and bind an event loop to THIS background thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self.loop = loop
             try:
                 loop.run_until_complete(self._connect_and_listen())
             except Exception as e:
                 logger.error(f"Connection task error: {e}")
             finally:
-                loop.close()
-        
+                # ensure no further cross-thread scheduling happens
+                self.loop = None
+                try:
+                    loop.run_until_complete(asyncio.sleep(0))
+                finally:
+                    loop.close()
+
         self.connection_task = threading.Thread(target=run_connection, daemon=True)
         self.connection_task.start()
     
@@ -235,13 +242,15 @@ class WebSocketClient:
                 
                 async with websockets.connect(
                     self.server_url,
-                    ping_interval=20,
-                    ping_timeout=10,
-                    close_timeout=10
+                    ping_interval=30,
+                    ping_timeout=20,
+                    close_timeout=20,
+                    max_size=16 * 1024 * 1024
                 ) as websocket:
                     self.websocket = websocket
                     self.is_connected = True
                     self.reconnect_attempts = 0
+                    self.reconnect_delay = 2
                     
                     logger.info("Connected to server!")
                     self.message_callback({
@@ -267,8 +276,8 @@ class WebSocketClient:
                         except Exception as e:
                             logger.error(f"Message handling error: {e}")
             
-            except websockets.exceptions.ConnectionClosed:
-                logger.info("Connection closed by server")
+            except websockets.exceptions.ConnectionClosed as e:
+                logger.info(f"Connection closed by server (code={getattr(e, 'code', 'unknown')}, reason={getattr(e, 'reason', '')})")
             except websockets.exceptions.InvalidURI:
                 logger.error("Invalid server URL")
                 break
@@ -291,6 +300,18 @@ class WebSocketClient:
                 self.reconnect_delay = min(self.reconnect_delay * 1.5, 30)  # Exponential backoff
         
         logger.error("Max reconnection attempts reached")
+
+    async def _send_json(self, message_json: str):
+        """Send a JSON string over the active websocket on the connection loop.
+        If not connected, queue the message for later."""
+        if self.is_connected and self.websocket:
+            try:
+                await self.websocket.send(message_json)
+                return
+            except Exception as e:
+                logger.error(f"Send error: {e}")
+        # If we got here, queue for later
+        self.message_queue.put(message_json)
     
     def send_message(self, message_data: Dict):
         """Send message to server"""
@@ -298,33 +319,26 @@ class WebSocketClient:
         message_data["user_id"] = self.user_id
         message_json = json.dumps(message_data)
         
-        if self.is_connected and self.websocket:
-            # Send immediately if connected
-            def send_async():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+        # Schedule send on the connection loop if available; otherwise queue
+        if self.loop is not None:
+            future = asyncio.run_coroutine_threadsafe(self._send_json(message_json), self.loop)
+            # capture send errors and re-queue
+            def _handle_result(fut):
                 try:
-                    loop.run_until_complete(self.websocket.send(message_json))
+                    fut.result()
                 except Exception as e:
-                    logger.error(f"Send error: {e}")
+                    logger.error(f"Send scheduling error: {e}")
                     self.message_queue.put(message_json)
-                finally:
-                    loop.close()
-            
-            threading.Thread(target=send_async, daemon=True).start()
+            future.add_done_callback(_handle_result)
         else:
-            # Queue message for later sending
             self.message_queue.put(message_json)
     
     def disconnect(self):
         """Disconnect from server"""
         self.is_connected = False
         self.reconnect_attempts = self.max_reconnect_attempts  # Prevent reconnection
-        if self.websocket:
-            asyncio.run_coroutine_threadsafe(
-                self.websocket.close(),
-                asyncio.get_event_loop()
-            )
+        if self.websocket and self.loop is not None:
+            asyncio.run_coroutine_threadsafe(self.websocket.close(), self.loop)
 
 class VoiceAIClientGUI:
     """Main GUI application for Voice AI Client"""

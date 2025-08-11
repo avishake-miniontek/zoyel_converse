@@ -326,7 +326,7 @@ class VoiceAIServer:
             api_key="zoyel-medgemma-27b-it-miniontek"
         )
     
-    async def register_client(self, websocket: websockets.WebSocketServerProtocol, session_id: str):
+    async def register_client(self, websocket, session_id: str):
         """Register a new client connection"""
         self.connected_clients[session_id] = websocket
         logger.info(f"Client registered: {session_id}")
@@ -428,7 +428,7 @@ class VoiceAIServer:
             traceback.print_exc()
             return None
     
-    async def handle_client_message(self, websocket: websockets.WebSocketServerProtocol, message_data: Dict):
+    async def handle_client_message(self, websocket, message_data: Dict):
         """Handle incoming client message"""
         try:
             message_type = message_data.get("type")
@@ -556,7 +556,7 @@ class VoiceAIServer:
                 "message": "Internal server error"
             }))
     
-    async def handle_client(self, websocket: websockets.WebSocketServerProtocol):
+    async def handle_client(self, websocket):
         """Handle individual client connection"""
         session_id = None
         try:
@@ -589,8 +589,8 @@ class VoiceAIServer:
                         "message": "Error processing message"
                     }))
         
-        except websockets.exceptions.ConnectionClosed:
-            logger.info(f"Client {session_id} disconnected")
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.info(f"Client {session_id} disconnected (code={getattr(e, 'code', 'unknown')}, reason={getattr(e, 'reason', '')})")
         except Exception as e:
             logger.error(f"Connection error: {e}")
         finally:
@@ -632,8 +632,9 @@ class VoiceAIServer:
             self.handle_client,
             self.host,
             self.port,
-            ping_interval=20,
-            ping_timeout=10
+            ping_interval=30,
+            ping_timeout=20,
+            max_size=16 * 1024 * 1024
         )
         
         logger.info("Voice AI Server started successfully!")

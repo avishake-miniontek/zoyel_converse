@@ -35,11 +35,12 @@ try:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     from matplotlib.figure import Figure
-    import simpleaudio as sa
 except ImportError as e:
     print(f"Missing dependency: {e}")
-    print("Install with: pip install pyaudio numpy matplotlib simpleaudio")
+    print("Install with: pip install pyaudio numpy matplotlib")
     exit(1)
+
+# Note: Removed simpleaudio dependency, as playback now uses PyAudio for consistency and device selection.
 
 # Configure logging
 logging.basicConfig(
@@ -61,31 +62,25 @@ class AudioManager:
         self.chunk_size = 1024
         self.format = pyaudio.paInt16
         
-        # Find suitable audio devices
-        self.input_device_index = self._find_input_device()
-        self.output_device_index = self._find_output_device()
-    
-    def _find_input_device(self) -> int:
-        """Find suitable input device"""
+        # Find all audio devices
+        self.input_devices = []
+        self.output_devices = []
         for i in range(self.audio.get_device_count()):
             info = self.audio.get_device_info_by_index(i)
-            logger.log(level=logging.INFO, msg=f"Found input device: {info['name']}")
             if info['maxInputChannels'] > 0:
-                return i
-        return 0
-    
-    def _find_output_device(self) -> int:
-        """Find suitable output device"""
-        for i in range(self.audio.get_device_count()):
-            info = self.audio.get_device_info_by_index(i)
-            logger.log(level=logging.INFO, msg=f"Found output device: {info['name']}")
+                self.input_devices.append((i, info['name']))
+                logger.info(f"Found input device: {info['name']}")
             if info['maxOutputChannels'] > 0:
-                return i
-        return 0
+                self.output_devices.append((i, info['name']))
+                logger.info(f"Found output device: {info['name']}")
+        
+        # Default to first available devices
+        self.input_device_index = self.input_devices[0][0] if self.input_devices else None
+        self.output_device_index = self.output_devices[0][0] if self.output_devices else None
     
     def start_recording(self, callback: Optional[Callable] = None):
         """Start audio recording"""
-        if self.is_recording:
+        if self.is_recording or self.input_device_index is None:
             return
         
         self.is_recording = True
@@ -143,17 +138,36 @@ class AudioManager:
         return b""
     
     def play_audio(self, wav_data: bytes):
-        """Play audio data"""
-        try:
-            # Use simpleaudio for simple playback
-            wave_obj = sa.WaveObject.from_wave_file(io.BytesIO(wav_data))
-            play_obj = wave_obj.play()
-            
-            # Don't block - let it play in background
-            threading.Thread(target=lambda: play_obj.wait_done(), daemon=True).start()
-            
-        except Exception as e:
-            logger.error(f"Playback error: {e}")
+        """Play audio data using PyAudio"""
+        if not wav_data or self.output_device_index is None:
+            return
+        
+        def play_thread():
+            try:
+                logger.info("Starting audio playback")
+                wf = wave.open(io.BytesIO(wav_data), 'rb')
+                stream = self.audio.open(
+                    format=self.audio.get_format_from_width(wf.getsampwidth()),
+                    channels=wf.getnchannels(),
+                    rate=wf.getframerate(),
+                    output=True,
+                    output_device_index=self.output_device_index
+                )
+                
+                data = wf.readframes(self.chunk_size)
+                while data:
+                    stream.write(data)
+                    data = wf.readframes(self.chunk_size)
+                
+                stream.stop_stream()
+                stream.close()
+                wf.close()
+                logger.info("Playback finished")
+            except Exception as e:
+                logger.error(f"Playback error: {e}")
+        
+        # Start playback in a daemon thread (GUI mainloop keeps app alive)
+        threading.Thread(target=play_thread, daemon=True).start()
     
     def _to_wav_bytes(self, raw_audio: bytes) -> bytes:
         """Convert raw audio to WAV format"""
@@ -391,6 +405,24 @@ class VoiceAIClientGUI:
         self.server_entry.insert(0, self.server_url)
         self.server_entry.pack(side=tk.LEFT, padx=(0, 10))
         
+        # Input device dropdown
+        ttk.Label(top_frame, text="Input:", style='Dark.TLabel').pack(side=tk.LEFT, padx=(10, 5))
+        input_names = [d[1] for d in self.audio_manager.input_devices]
+        self.input_combo = ttk.Combobox(top_frame, values=input_names, state="readonly", width=20)
+        self.input_combo.pack(side=tk.LEFT, padx=(0, 10))
+        if input_names:
+            self.input_combo.current(0)
+        self.input_combo.bind("<<ComboboxSelected>>", self.update_input_device)
+        
+        # Output device dropdown
+        ttk.Label(top_frame, text="Output:", style='Dark.TLabel').pack(side=tk.LEFT, padx=(0, 5))
+        output_names = [d[1] for d in self.audio_manager.output_devices]
+        self.output_combo = ttk.Combobox(top_frame, values=output_names, state="readonly", width=20)
+        self.output_combo.pack(side=tk.LEFT, padx=(0, 10))
+        if output_names:
+            self.output_combo.current(0)
+        self.output_combo.bind("<<ComboboxSelected>>", self.update_output_device)
+        
         # Connect/Disconnect button
         self.connect_button = ttk.Button(
             top_frame,
@@ -503,6 +535,18 @@ class VoiceAIClientGUI:
             font=('Arial', 8)
         )
         self.session_label.pack(side=tk.RIGHT)
+    
+    def update_input_device(self, event):
+        """Update selected input device"""
+        if self.input_combo.current() >= 0:
+            self.audio_manager.input_device_index = self.audio_manager.input_devices[self.input_combo.current()][0]
+            logger.info(f"Selected input device: {self.input_combo.get()}")
+    
+    def update_output_device(self, event):
+        """Update selected output device"""
+        if self.output_combo.current() >= 0:
+            self.audio_manager.output_device_index = self.audio_manager.output_devices[self.output_combo.current()][0]
+            logger.info(f"Selected output device: {self.output_combo.get()}")
     
     def setup_audio_visualization(self):
         """Setup real-time audio visualization"""
@@ -763,6 +807,7 @@ class VoiceAIClientGUI:
     
     def on_closing(self):
         """Handle application closing"""
+        logger.info("GUI closing triggered")
         try:
             # Stop recording if active
             if self.is_recording:

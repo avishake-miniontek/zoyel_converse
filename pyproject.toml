@@ -1,0 +1,18 @@
+[project]
+name = "zoyel-converse"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "asyncio>=4.0.0",
+    "datetime>=5.5",
+    "logging>=0.4.9.6",
+    "matplotlib>=3.10.5",
+    "pathlib>=1.0.1",
+    "pyaudio>=0.2.14",
+    "simpleaudio>=1.0.4",
+    "typing>=3.10.0.0",
+    "uuid>=1.30",
+    "websockets>=15.0.1",
+]

@@ -78,7 +78,7 @@ class Session:
     context: List[Dict]
     model_name: str
     temperature: float = 0.3
-    max_tokens: int = 2000
+    max_tokens: int = 1024
     is_active: bool = True
 
 class DatabaseManager:

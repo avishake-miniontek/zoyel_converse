@@ -224,7 +224,7 @@ class VoiceProcessor:
         
         # Initialize Hugging Face Whisper pipeline for STT
         try:
-            self.stt_pipeline = pipeline("automatic-speech-recognition", model=stt_model)
+            self.stt_pipeline = pipeline("automatic-speech-recognition", model=stt_model, generate_kwargs={"language": "en"})
             logger.info(f"Hugging Face Whisper model '{stt_model}' loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load Whisper model: {e}")

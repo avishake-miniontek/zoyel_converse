@@ -49,30 +49,33 @@ def get_weather(location: str) -> str:
 
 def get_weather_schema():
     return {
-        "name": "get_weather",
-        "description": "Get the current weather conditions for a specific location. Uses Open‑Meteo geocoding to find latitude and longitude, then fetches current weather conditions (e.g., temperature, conditions). Returns formatted weather info.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "location": {
-                    "type": "string",
-                    "description": "The name of the city or location to get weather for. Can include country or state for specificity (e.g., 'New Delhi, India')."
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get the current weather conditions for a specific location. Uses Open-Meteo geocoding to find latitude and longitude, then fetches current weather conditions (e.g., temperature, conditions). Returns formatted weather info.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "The name of the city or location to get weather for. Can include country or state for specificity (e.g., 'New Delhi, India')."
+                    }
+                },
+                "required": ["location"]
+            },
+            "examples": [
+                {
+                    "input": "What's the weather like in Paris?",
+                    "call": {"name": "get_weather", "arguments": {"location": "Paris"}}
+                },
+                {
+                    "input": "How's the weather in Tokyo today?",
+                    "call": {"name": "get_weather", "arguments": {"location": "Tokyo"}}
+                },
+                {
+                    "input": "Do I need an umbrella in Seattle?",
+                    "call": {"name": "get_weather", "arguments": {"location": "Seattle, US"}}
                 }
-            },
-            "required": ["location"]
-        },
-        "examples": [
-            {
-                "input": "What's the weather like in Paris?",
-                "call": {"name": "get_weather", "arguments": {"location": "Paris"}}
-            },
-            {
-                "input": "How's the weather in Tokyo today?",
-                "call": {"name": "get_weather", "arguments": {"location": "Tokyo"}}
-            },
-            {
-                "input": "Do I need an umbrella in Seattle?",
-                "call": {"name": "get_weather", "arguments": {"location": "Seattle, US"}}
-            }
-        ]
+            ]
+        }
     }

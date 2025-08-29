@@ -1,125 +1,170 @@
-import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+import json
+import logging
 
-# Assuming the Base and PatientData are defined in the same module or imported
-from sqlalchemy.ext.declarative import declarative_base
+logger = logging.getLogger(__name__)
 
-Base = declarative_base()
+# Import the PatientData model from save_patient_data
+from .save_patient_data import PatientData
 
-class PatientData(Base):
-    __tablename__ = 'patient_data'
-    session_id = Column(String, primary_key=True)
-    data = Column(Text)
+# Create database engine and session
+engine = create_engine("sqlite:///voice_ai.db")
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-def fetch_patient_data(session_id: str, fields: List[str]) -> str:
-    """Fetch and format specific patient data fields from the database for the given session_id using SQLAlchemy."""
-    engine = create_engine('sqlite:///voice_ai.db')
-    Session = sessionmaker(bind=engine)
-    with Session() as session:
-        patient = session.query(PatientData).filter_by(session_id=session_id).first()
-        if not patient:
-            return "No patient data found for this session."
 
-        data: Dict[str, Any] = json.loads(patient.data)
-        result_parts: List[str] = []
+def fetch_patient_data(session_id: str, fields: List[str] = None) -> Dict[str, Any]:
+    """
+    Fetch patient data from the database for a specific session.
 
-        for field in fields:
-            if field not in data:
-                result_parts.append(f"{field.capitalize()}: not available")
-                continue
-            value = data[field]
+    Args:
+        session_id: Unique session identifier
+        fields: Optional list of specific fields to retrieve. If None, returns all data.
+                Available fields: age, gender, city, country, date, complaints, vitals,
+                physical_examination, comorbidities, past_history, current_medications,
+                family_history, allergies, test_documents, test_results
 
-            if field == "age":
-                v = value
-                result_parts.append(f"Age: {v['years']} years, {v['months']} months, {v['days']} days")
-            elif field in ["gender", "city", "country", "date"]:
-                result_parts.append(f"{field.capitalize()}: {value}")
-            elif field == "complaints":
-                if not value:
-                    result_parts.append("Complaints: none")
-                else:
-                    comp_str = "Complaints:\n" + "\n".join(
-                        f"- {c['symptom']} ({c['severity']} severity) since {c['since']}" for c in value
-                    )
-                    result_parts.append(comp_str)
-            elif field == "vitals":
-                v = value
-                vit_str = (
-                    f"Vitals:\n"
-                    f"- Weight: {v['weight_kg']} kg\n"
-                    f"- Height: {v['height_cm']} cm\n"
-                    f"- Blood pressure: {v['bp_systolic']}/{v['bp_diastolic']} mmHg\n"
-                    f"- Temperature: {v['temperature_c']} °C\n"
-                    f"- Heart rate: {v['heart_rate']} bpm\n"
-                    f"- Respiration rate: {v['respiration_rate']} breaths/min\n"
-                    f"- SpO2: {v['spo2']}%\n"
-                    f"- LMP: {v['lmp'] or 'none'}"
-                )
-                result_parts.append(vit_str)
-            elif field == "physical_examination":
-                result_parts.append(f"Physical examination: {value or 'none'}")
-            elif field in ["comorbidities", "current_medications", "test_documents", "test_results"]:
-                result_parts.append(f"{field.capitalize()}: {', '.join(value) if value else 'none'}")
-            elif field == "past_history":
-                ph = value
-                ill = ", ".join(ph['past_illnesses']) if ph['past_illnesses'] else "none"
-                proc = ", ".join(ph['previous_procedures']) if ph['previous_procedures'] else "none"
-                result_parts.append(f"Past history:\n- Illnesses: {ill}\n- Procedures: {proc}")
-            elif field == "family_history":
-                result_parts.append(f"Family history: {', '.join(value) if value else 'none'}")
-            elif field == "allergies":
-                al = value
-                drug = ", ".join(al['drug_allergies']) if al['drug_allergies'] else "none"
-                food = ", ".join(al['food_allergies']) if al['food_allergies'] else "none"
-                result_parts.append(f"Allergies:\n- Drug allergies: {drug}\n- Food allergies: {food}")
-            else:
-                result_parts.append(f"{field.capitalize()}: {str(value)}")
+    Returns:
+        Dictionary containing requested patient data or error message
+    """
+    try:
+        db = SessionLocal()
+        try:
+            # Query patient data
+            patient = (
+                db.query(PatientData)
+                .filter(PatientData.session_id == session_id)
+                .first()
+            )
 
-        return "\n\n".join(result_parts)
+            if not patient:
+                return {
+                    "success": False,
+                    "message": "No patient data found for this session",
+                }
+
+            # Build complete patient data dictionary
+            complete_data = {
+                "age": {
+                    "years": patient.age_years or 0,
+                    "months": patient.age_months or 0,
+                    "days": patient.age_days or 0,
+                },
+                "gender": patient.gender or "",
+                "city": patient.city or "",
+                "country": patient.country or "",
+                "date": patient.date or "",
+                "complaints": patient.complaints or [],
+                "vitals": {
+                    "weight_kg": patient.weight_kg or 0,
+                    "height_cm": patient.height_cm or 0,
+                    "bp_systolic": patient.bp_systolic or 0,
+                    "bp_diastolic": patient.bp_diastolic or 0,
+                    "temperature_c": patient.temperature_c or 0,
+                    "heart_rate": patient.heart_rate or 0,
+                    "respiration_rate": patient.respiration_rate or 0,
+                    "spo2": patient.spo2 or 0,
+                    "lmp": patient.lmp or "",
+                },
+                "physical_examination": patient.physical_examination or "",
+                "comorbidities": patient.comorbidities or [],
+                "past_history": {
+                    "past_illnesses": patient.past_illnesses or [],
+                    "previous_procedures": patient.previous_procedures or [],
+                },
+                "current_medications": patient.current_medications or [],
+                "family_history": patient.family_history or [],
+                "allergies": {
+                    "drug_allergies": patient.drug_allergies or [],
+                    "food_allergies": patient.food_allergies or [],
+                },
+                "test_documents": patient.test_documents or [],
+                "test_results": patient.test_results or [],
+                "metadata": {
+                    "created_at": patient.created_at.isoformat()
+                    if patient.created_at
+                    else None,
+                    "updated_at": patient.updated_at.isoformat()
+                    if patient.updated_at
+                    else None,
+                },
+            }
+
+            # If specific fields requested, filter the data
+            if fields:
+                filtered_data = {}
+                for field in fields:
+                    if field in complete_data:
+                        filtered_data[field] = complete_data[field]
+                    else:
+                        logger.warning(
+                            f"Requested field '{field}' not found in patient data"
+                        )
+
+                return {"success": True, "data": filtered_data}
+
+            # Return all data
+            return {"success": True, "data": complete_data}
+
+        finally:
+            db.close()
+
+    except Exception as e:
+        logger.error(f"Error fetching patient data: {e}")
+        return {"success": False, "message": f"Error fetching patient data: {str(e)}"}
 
 
 def fetch_patient_data_schema():
     return {
-        "name": "fetch_patient_data",
-        "description": "Fetch specific patient data fields from the database for a session and return them in a formatted, natural language string. Specify the fields to retrieve (e.g., 'allergies', 'vitals'). The AI can then incorporate this directly into a response.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "session_id": {
-                    "type": "string",
-                    "description": "The unique session ID for the patient."
+        "type": "function",
+        "function": {
+            "name": "fetch_patient_data",
+            "description": "Retrieve patient data from the database. Use this when the user asks to recall or confirm any of their previously provided medical information.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Unique session identifier",
+                    },
+                    "fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of specific fields to retrieve. Available: age, gender, city, country, date, complaints, vitals, physical_examination, comorbidities, past_history, current_medications, family_history, allergies, test_documents, test_results. If not specified, returns all data.",
+                    },
                 },
-                "fields": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of fields to fetch (e.g., ['allergies', 'vitals', 'complaints'])."
-                }
+                "required": ["session_id"],
             },
-            "required": ["session_id", "fields"]
+            "examples": [
+                {
+                    "input": "Can you remind me what allergies I told you about?",
+                    "call": {
+                        "name": "fetch_patient_data",
+                        "arguments": {"session_id": "abc123", "fields": ["allergies"]},
+                    },
+                },
+                {
+                    "input": "What's my medical history that we discussed?",
+                    "call": {
+                        "name": "fetch_patient_data",
+                        "arguments": {
+                            "session_id": "abc123",
+                            "fields": [
+                                "past_history",
+                                "comorbidities",
+                                "family_history",
+                            ],
+                        },
+                    },
+                },
+                {
+                    "input": "Show me all my information",
+                    "call": {
+                        "name": "fetch_patient_data",
+                        "arguments": {"session_id": "abc123"},
+                    },
+                },
+            ],
         },
-        "examples": [
-            {
-                "input": "What allergies do I have?",
-                "call": {
-                    "name": "fetch_patient_data",
-                    "arguments": {"session_id": "test", "fields": ["allergies"]}
-                }
-            },
-            {
-                "input": "Tell me my vitals and complaints.",
-                "call": {
-                    "name": "fetch_patient_data",
-                    "arguments": {"session_id": "test", "fields": ["vitals", "complaints"]}
-                }
-            },
-            {
-                "input": "What's my family history?",
-                "call": {
-                    "name": "fetch_patient_data",
-                    "arguments": {"session_id": "test", "fields": ["family_history"]}
-                }
-            }
-        ]
     }

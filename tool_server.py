@@ -338,45 +338,28 @@ class ModelContextProtocol:
     """Handle Model Context Protocol (MCP) for tool integration"""
     
     def __init__(self):
-        self.available_tools = {
-            "get_time": self.get_current_time,
-            "calculate": self.calculate,
-            "search_web": self.search_web,
-            "get_weather": self.get_weather
-        }
+        # Use the imported TOOL_FUNCTIONS directly
+        self.available_tools = TOOL_FUNCTIONS
     
     async def handle_tool_call(self, function_name: str, arguments: Dict) -> Dict:
         """Handle tool function calls"""
         try:
             if function_name in self.available_tools:
-                result = await self.available_tools[function_name](**arguments)
+                # Get the function
+                func = self.available_tools[function_name]
+                
+                # Check if it's an async function
+                if asyncio.iscoroutinefunction(func):
+                    result = await func(**arguments)
+                else:
+                    result = func(**arguments)
+                    
                 return {"success": True, "result": result}
             else:
                 return {"success": False, "error": f"Unknown function: {function_name}"}
         except Exception as e:
             logger.error(f"Tool call error: {e}")
             return {"success": False, "error": str(e)}
-    
-    async def get_current_time(self) -> str:
-        """Get current time"""
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    async def calculate(self, expression: str) -> str:
-        """Safe calculator"""
-        try:
-            # Simple safe evaluation
-            result = eval(expression, {"__builtins__": {}}, {})
-            return str(result)
-        except:
-            return "Invalid expression"
-    
-    async def search_web(self, query: str) -> str:
-        """Mock web search"""
-        return f"Search results for: {query} (Mock implementation)"
-    
-    async def get_weather(self, location: str) -> str:
-        """Mock weather service"""
-        return f"Weather in {location}: Sunny, 22°C (Mock implementation)"
 
 class VoiceAIServer:
     def __init__(self, host: str = "localhost", port: int = 8765):
@@ -601,6 +584,11 @@ class VoiceAIServer:
                         # Execute the function
                         if fn_name in self.tool_functions:
                             fn = self.tool_functions[fn_name]
+                            
+                            # Add session_id for patient data functions if not already present
+                            if fn_name in ["save_patient_data", "fetch_patient_data"] and "session_id" not in args:
+                                args["session_id"] = session.id
+                            
                             if asyncio.iscoroutinefunction(fn):
                                 result = await fn(**args)
                             else:

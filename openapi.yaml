@@ -1,0 +1,1526 @@
+openapi: 3.1.0
+info:
+  title: Clinical Reasoning API
+  version: 7.0
+servers:
+  - url: /api6
+paths:
+  /chat:
+    post:
+      summary: Chat Endpoint
+      operationId: chat_endpoint_chat_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+        required: true
+      responses:
+        200:
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+        422:
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /clinical_reasoning/input:
+    post:
+      summary: Save Clinical Input
+      operationId: save_clinical_input_clinical_reasoning_input_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClinicalReasoningInput'
+        required: true
+      responses:
+        200:
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        422:
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /clinical_reasoning/follow_up_questions:
+    get:
+      summary: Get Follow Up Questions
+      operationId: get_follow_up_questions_clinical_reasoning_follow_up_questions_get
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+            title: Session Id
+        - name: lang
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - enum:
+                  - en
+                  - es
+                  - ar
+                type: string
+              - type: null
+            default: en
+            title: Lang
+      responses:
+        200:
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FollowUpQuestionsOutput'
+        422:
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /clinical_reasoning/examination_suggestions:
+    get:
+      summary: Get Examination Suggestions
+      operationId: get_examination_suggestions_clinical_reasoning_examination_suggestions_get
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+            title: Session Id
+        - name: lang
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - enum:
+                  - en
+                  - es
+                  - ar
+                type: string
+              - type: null
+            default: en
+            title: Lang
+      responses:
+        200:
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExaminationSuggestionsOutput'
+        422:
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /clinical_reasoning/investigation_suggestions:
+    get:
+      summary: Get Investigation Suggestions
+      operationId: get_investigation_suggestions_clinical_reasoning_investigation_suggestions_get
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+            title: Session Id
+        - name: lang
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - enum:
+                  - en
+                  - es
+                  - ar
+                type: string
+              - type: null
+            default: en
+            title: Lang
+      responses:
+        200:
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvestigationSuggestionsOutput'
+        422:
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /final_diagnosis:
+    post:
+      summary: Final Diagnosis
+      operationId: final_diagnosis_final_diagnosis_post
+      parameters:
+        - name: lang
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - enum:
+                  - en
+                  - es
+                  - ar
+                type: string
+              - type: null
+            default: en
+            title: Lang
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FinalDiagnosisInput'
+      responses:
+        200:
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalDiagnosisOutput'
+        422:
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /treatment_recommendation:
+    post:
+      summary: Treatment Recommendation
+      operationId: treatment_recommendation_treatment_recommendation_post
+      parameters:
+        - name: lang
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - enum:
+                  - en
+                  - es
+                  - ar
+                type: string
+              - type: null
+            default: en
+            title: Lang
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TreatmentRecommendationInput'
+      responses:
+        200:
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TreatmentRecommendationOutput'
+        422:
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /drug_safety_check:
+    post:
+      summary: Drug Safety Check
+      operationId: drug_safety_check_drug_safety_check_post
+      parameters:
+        - name: lang
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - enum:
+                  - en
+                  - es
+                  - ar
+                type: string
+              - type: null
+            default: en
+            title: Lang
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DrugSafetyCheckInput'
+      responses:
+        200:
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DrugSafetyCheckOutput'
+        422:
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /query6_recommendations/{session_id}:
+    get:
+      summary: Get Query6 Recommendations
+      operationId: get_query6_recommendations_query6_recommendations__session_id__get
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            title: Session Id
+        - name: lang
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - enum:
+                  - en
+                  - es
+                  - ar
+                type: string
+              - type: null
+            default: en
+            title: Lang
+      responses:
+        200:
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Query6Output'
+        422:
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /query6_patient_education/{session_id}:
+    get:
+      summary: Generate Patient Education Sheet
+      operationId: generate_patient_education_sheet_query6_patient_education__session_id__get
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            title: Session Id
+        - name: lang
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - enum:
+                  - en
+                  - es
+                  - ar
+                type: string
+              - type: null
+            default: en
+            title: Lang
+      responses:
+        200:
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatientEducationSheet'
+        422:
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+components:
+  schemas:
+    ActiveIngredient:
+      properties:
+        name:
+          type: string
+          title: Name
+        strength:
+          type: string
+          title: Strength
+        form:
+          $ref: '#/components/schemas/FormEnum'
+      type: object
+      required:
+        - name
+        - strength
+        - form
+      title: ActiveIngredient
+    Age:
+      properties:
+        years:
+          type: integer
+          title: Years
+        months:
+          type: integer
+          title: Months
+        days:
+          type: integer
+          title: Days
+      type: object
+      required:
+        - years
+        - months
+        - days
+      title: Age
+    Allergies:
+      properties:
+        drug_allergies:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: null
+          title: Drug Allergies
+          default: []
+        food_allergies:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: null
+          title: Food Allergies
+          default: []
+      type: object
+      title: Allergies
+    ChatRequest:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        message:
+          type: string
+          title: Message
+        lang:
+          anyOf:
+            - type: string
+              enum:
+                - en
+                - es
+                - ar
+            - type: null
+          title: Lang
+          default: en
+      type: object
+      required:
+        - session_id
+        - message
+      title: ChatRequest
+    ChatResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        reply:
+          type: string
+          title: Reply
+      type: object
+      required:
+        - session_id
+        - reply
+      title: ChatResponse
+    ClinicalReasoningInput:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        age:
+          $ref: '#/components/schemas/Age'
+        gender:
+          type: string
+          title: Gender
+        city:
+          type: string
+          title: City
+        country:
+          type: string
+          title: Country
+        date:
+          type: string
+          title: Date
+        complaints:
+          items:
+            $ref: '#/components/schemas/Complaint'
+          type: array
+          title: Complaints
+        vitals:
+          $ref: '#/components/schemas/Vitals'
+        physical_examination:
+          anyOf:
+            - type: string
+            - type: null
+          title: Physical Examination
+        comorbidities:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: null
+          title: Comorbidities
+          default: []
+        past_history:
+          anyOf:
+            - $ref: '#/components/schemas/PastHistory'
+            - type: null
+        current_medications:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: null
+          title: Current Medications
+          default: []
+        family_history:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: null
+          title: Family History
+          default: []
+        allergies:
+          anyOf:
+            - $ref: '#/components/schemas/Allergies'
+            - type: null
+        test_documents:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: null
+          title: Test Documents
+          default: []
+        test_results:
+          anyOf:
+            - items:
+                $ref: '#/components/schemas/TestResult'
+              type: array
+            - type: null
+          title: Test Results
+          default: []
+      type: object
+      required:
+        - session_id
+        - age
+        - gender
+        - city
+        - country
+        - date
+        - complaints
+        - vitals
+      title: ClinicalReasoningInput
+    Complaint:
+      properties:
+        symptom:
+          type: string
+          title: Symptom
+        severity:
+          type: string
+          title: Severity
+        since:
+          type: string
+          title: Since
+      type: object
+      required:
+        - symptom
+        - severity
+        - since
+      title: Complaint
+    DiagnosticTest:
+      properties:
+        name:
+          type: string
+          title: Name
+          example: Urine Culture
+        purpose:
+          anyOf:
+            - type: string
+            - type: null
+          title: Purpose
+          example: Identify causative organism
+      type: object
+      required:
+        - name
+      title: DiagnosticTest
+    DrugSafetyCheckInput:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        new_medications:
+          items:
+            type: string
+          type: array
+          title: New Medications
+        current_medications:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: null
+          title: Current Medications
+          default: []
+        allergies:
+          anyOf:
+            - $ref: '#/components/schemas/Allergies'
+            - type: null
+        comorbidities:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: null
+          title: Comorbidities
+          default: []
+      type: object
+      required:
+        - session_id
+        - new_medications
+      title: DrugSafetyCheckInput
+    DrugSafetyCheckOutput:
+      properties:
+        adverse_drug_reactions:
+          items:
+            $ref: '#/components/schemas/DrugSafetyIssue'
+          type: array
+          title: Adverse Drug Reactions
+        drug_allergy_alerts:
+          items:
+            $ref: '#/components/schemas/DrugSafetyIssue'
+          type: array
+          title: Drug Allergy Alerts
+        drug_drug_interactions:
+          items:
+            $ref: '#/components/schemas/DrugSafetyIssue'
+          type: array
+          title: Drug Drug Interactions
+        contraindications:
+          items:
+            $ref: '#/components/schemas/DrugSafetyIssue'
+          type: array
+          title: Contraindications
+        dose_safety_checks:
+          items:
+            $ref: '#/components/schemas/DrugSafetyIssue'
+          type: array
+          title: Dose Safety Checks
+      type: object
+      required:
+        - adverse_drug_reactions
+        - drug_allergy_alerts
+        - drug_drug_interactions
+        - contraindications
+        - dose_safety_checks
+      title: DrugSafetyCheckOutput
+    DrugSafetyIssue:
+      properties:
+        description:
+          type: string
+          title: Description
+        related_medications:
+          items:
+            type: string
+          type: array
+          title: Related Medications
+      type: object
+      required:
+        - description
+        - related_medications
+      title: DrugSafetyIssue
+    DurationEnum:
+      type: string
+      enum:
+        - 1 Day
+        - 2 Days
+        - 3 Days
+        - 4 Days
+        - 5 Days
+        - 6 Days
+        - To continue
+        - 7 Days
+        - 8 Days
+        - 9 Days
+        - 10 Days
+        - 11 Days
+        - 12 Days
+        - 13 Days
+        - 14 Days
+        - 15 Days
+        - 16 Days
+        - 17 Days
+        - 18 Days
+        - 19 Days
+        - 20 Days
+        - 21 Days
+        - 22 Days
+        - 23 Days
+        - 24 Days
+        - 25 Days
+        - 26 Days
+        - 27 Days
+        - 28 Days
+        - 29 Days
+        - 1 Month
+        - 1.5 Months
+        - 2 Months
+        - 3 Months
+        - 4 Months
+        - 5 Months
+        - 6 Months
+        - 7 Months
+        - 8 Months
+        - 9 Months
+        - 10 Months
+        - 11 Months
+        - 12 Months
+        - 18 Months
+        - 24 Months
+      title: DurationEnum
+    ExaminationFinding:
+      properties:
+        finding:
+          type: string
+          title: Finding
+      type: object
+      required:
+        - finding
+      title: ExaminationFinding
+    ExaminationSuggestion:
+      properties:
+        type:
+          type: string
+          title: Type
+        suggestion:
+          type: string
+          title: Suggestion
+      type: object
+      required:
+        - type
+        - suggestion
+      title: ExaminationSuggestion
+    ExaminationSuggestionsOutput:
+      properties:
+        examination_suggestions:
+          items:
+            $ref: '#/components/schemas/ExaminationSuggestion'
+          type: array
+          title: Examination Suggestions
+      type: object
+      required:
+        - examination_suggestions
+      title: ExaminationSuggestionsOutput
+    FinalDiagnosisInput:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        follow_up_answers:
+          items:
+            $ref: '#/components/schemas/FollowUpAnswer'
+          type: array
+          title: Follow Up Answers
+        examination_findings:
+          items:
+            $ref: '#/components/schemas/ExaminationFinding'
+          type: array
+          title: Examination Findings
+        test_results:
+          items:
+            $ref: '#/components/schemas/TestResult'
+          type: array
+          title: Test Results
+      type: object
+      required:
+        - session_id
+        - follow_up_answers
+        - examination_findings
+        - test_results
+      title: FinalDiagnosisInput
+    FinalDiagnosisOutput:
+      properties:
+        final_diagnosis:
+          items:
+            type: string
+          type: array
+          title: Final Diagnosis
+      type: object
+      required:
+        - final_diagnosis
+      title: FinalDiagnosisOutput
+    FollowUpAnswer:
+      properties:
+        question:
+          type: string
+          title: Question
+        answer:
+          type: string
+          title: Answer
+      type: object
+      required:
+        - question
+        - answer
+      title: FollowUpAnswer
+    FollowUpPlan:
+      properties:
+        instructions:
+          type: string
+          title: Instructions
+          example: Return in 5 days if no improvement.
+        next_appointment_date:
+          anyOf:
+            - type: string
+            - type: null
+          title: Next Appointment Date
+          example: 2025-08-01
+      type: object
+      required:
+        - instructions
+      title: FollowUpPlan
+    FollowUpQuestion:
+      properties:
+        question:
+          type: string
+          title: Question
+      type: object
+      required:
+        - question
+      title: FollowUpQuestion
+    FollowUpQuestionsOutput:
+      properties:
+        follow_up_questions:
+          items:
+            $ref: '#/components/schemas/FollowUpQuestion'
+          type: array
+          title: Follow Up Questions
+      type: object
+      required:
+        - follow_up_questions
+      title: FollowUpQuestionsOutput
+    FormEnum:
+      type: string
+      enum:
+        - AMP
+        - BALM
+        - BISCUIT
+        - CAPSULE
+        - CAPSULE CR
+        - CAPSULE MR
+        - CAPSULE SR
+        - CAPSULE TR
+        - CARTRIDGE
+        - CHEWABLE TABLET
+        - COMPRESS
+        - CREAM
+        - CRYSTAL
+        - DEVICE
+        - DOUGH
+        - DRESSING
+        - DROPS
+        - DURULE
+        - ELIXIR
+        - EMULSION
+        - ENEMA
+        - FACEWASH
+        - FILM
+        - FOAM
+        - GARGLE
+        - GAS
+        - GEL
+        - GRANULES
+        - GUM
+        - I.V FLUID
+        - IMPLANT
+        - INFUSION
+        - INHALER
+        - INJ
+        - INSERT
+        - JELLY
+        - KIT
+        - LACQUER
+        - LIQUID
+        - LOTION
+        - LOZENGES
+        - LYOPHILISATE
+        - MOUTHWASH
+        - OIL
+        - OINTMENT
+        - OPTHALMIC STRIP
+        - OVULE
+        - PAINT
+        - PASTE
+        - PATCH
+        - PENCIL
+        - PESSARY
+        - PLASTER
+        - POWDER
+        - PRE-FILLED PEN
+        - PRE-FILLED SYRINGE
+        - RESPULE
+        - ROTACAP
+        - SACHET
+        - SEEDS
+        - SHAMPOO
+        - SOAP
+        - SOFT GEL CAP
+        - SOLUTION
+        - SPONGE
+        - SPRAY
+        - STICK
+        - SUPPOSITORY
+        - SUSPENSION
+        - SYRUP
+        - TABLET
+        - TABLET CR
+        - TABLET DS
+        - TABLET EC
+        - TABLET EFFERVESCENT
+        - TABLET EMR
+        - TABLET ER
+        - TABLET FC
+        - TABLET IR
+        - TABLET MR
+        - TABLET PR
+        - TABLET SR
+        - TABLET SUBLINGUAL
+        - TINCTURE
+        - VACCINE
+        - VAGINAL TABLET
+        - VIAL
+      title: FormEnum
+    FrequencyEnum:
+      type: string
+      enum:
+        - ONCE A DAY
+        - TWICE A DAY
+        - THREE TIMES A DAY
+        - FOUR TIMES A DAY
+        - FIVE TIMES A DAY
+        - STAT
+        - SOS
+        - 1 HRLY
+        - 2 HRLY
+        - 3 HRLY
+        - 4 HRLY
+        - WEEKLY
+        - TWICE WEEKLY
+        - ALTERNATE DAY
+        - EVERY TWO WEEKS
+        - ONCE MONTHLY
+        - AS DIRECTED
+        - THRICE WEEKLY
+        - EVERY 8 HOURS
+        - EVERY 6 HOURS
+        - EVERY 12 HOURS
+        - EVERY THREE WEEKS
+      title: FrequencyEnum
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    HealthParameter:
+      properties:
+        name:
+          type: string
+          title: Name
+          example: Temperature
+        normal_range:
+          anyOf:
+            - type: string
+            - type: null
+          title: Normal Range
+          example: Below 99°F
+        notes:
+          anyOf:
+            - type: string
+            - type: null
+          title: Notes
+          example: Monitor twice daily
+      type: object
+      required:
+        - name
+      title: HealthParameter
+    InvestigationSuggestion:
+      properties:
+        test_name:
+          type: string
+          title: Test Name
+        reason:
+          type: string
+          title: Reason
+      type: object
+      required:
+        - test_name
+        - reason
+      title: InvestigationSuggestion
+    InvestigationSuggestionsOutput:
+      properties:
+        investigation_suggestions:
+          items:
+            $ref: '#/components/schemas/InvestigationSuggestion'
+          type: array
+          title: Investigation Suggestions
+      type: object
+      required:
+        - investigation_suggestions
+      title: InvestigationSuggestionsOutput
+    PastHistory:
+      properties:
+        past_illnesses:
+          anyOf:
+            - items:
+                $ref: '#/components/schemas/PastIllness'
+              type: array
+            - type: null
+          title: Past Illnesses
+          default: []
+        previous_procedures:
+          anyOf:
+            - items:
+                $ref: '#/components/schemas/PreviousProcedure'
+              type: array
+            - type: null
+          title: Previous Procedures
+          default: []
+      type: object
+      title: PastHistory
+    PastIllness:
+      properties:
+        illness:
+          type: string
+          title: Illness
+        date:
+          type: string
+          title: Date
+      type: object
+      required:
+        - illness
+        - date
+      title: PastIllness
+    PatientEducationSheet:
+      properties:
+        patient_name:
+          anyOf:
+            - type: string
+            - type: null
+          title: Patient Name
+          example: Rina Das
+        clinician_name:
+          anyOf:
+            - type: string
+            - type: null
+          title: Clinician Name
+          example: Dr. Zoyel
+        condition_name:
+          type: string
+          title: Condition Name
+          example: Urinary Tract Infection
+        icd11_code:
+          anyOf:
+            - type: string
+            - type: null
+          title: Icd11 Code
+          example: 1A00
+        summary:
+          type: string
+          title: Summary
+          example: A urinary tract infection causes pain while urinating and fever.
+        causes_or_risk_factors:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: null
+          title: Causes Or Risk Factors
+        symptoms:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: null
+          title: Symptoms
+        complications:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: null
+          title: Complications
+        diagnostic_tests:
+          anyOf:
+            - items:
+                $ref: '#/components/schemas/DiagnosticTest'
+              type: array
+            - type: null
+          title: Diagnostic Tests
+        relevant_parameters:
+          anyOf:
+            - items:
+                $ref: '#/components/schemas/HealthParameter'
+              type: array
+            - type: null
+          title: Relevant Parameters
+        lifestyle_modifications:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: null
+          title: Lifestyle Modifications
+        medications:
+          anyOf:
+            - items:
+                $ref: '#/components/schemas/draftV8__Medication__2'
+              type: array
+            - type: null
+          title: Medications
+        self_monitoring_guidelines:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: null
+          title: Self Monitoring Guidelines
+        emergency_signs:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: null
+          title: Emergency Signs
+        references:
+          anyOf:
+            - items:
+                $ref: '#/components/schemas/Reference'
+              type: array
+            - type: null
+          title: References
+        follow_up:
+          anyOf:
+            - $ref: '#/components/schemas/FollowUpPlan'
+            - type: null
+        clinician_notes:
+          anyOf:
+            - type: string
+            - type: null
+          title: Clinician Notes
+        patient_acknowledgement:
+          anyOf:
+            - type: boolean
+            - type: null
+          title: Patient Acknowledgement
+      type: object
+      required:
+        - condition_name
+        - summary
+      title: PatientEducationSheet
+    PreviousProcedure:
+      properties:
+        procedure:
+          type: string
+          title: Procedure
+        date:
+          type: string
+          title: Date
+      type: object
+      required:
+        - procedure
+        - date
+      title: PreviousProcedure
+    Procedure:
+      properties:
+        name:
+          type: string
+          title: Name
+        suggested_timeframe:
+          type: string
+          title: Suggested Timeframe
+      type: object
+      required:
+        - name
+        - suggested_timeframe
+      title: Procedure
+    Query6Output:
+      properties:
+        diet_recommendations:
+          items:
+            type: string
+          type: array
+          title: Diet Recommendations
+        lifestyle_recommendations:
+          items:
+            type: string
+          type: array
+          title: Lifestyle Recommendations
+        parameters_to_monitor:
+          items:
+            type: string
+          type: array
+          title: Parameters To Monitor
+        danger_signs_to_watch_for:
+          items:
+            type: string
+          type: array
+          title: Danger Signs To Watch For
+      type: object
+      required:
+        - diet_recommendations
+        - lifestyle_recommendations
+        - parameters_to_monitor
+        - danger_signs_to_watch_for
+      title: Query6Output
+    Reference:
+      properties:
+        title:
+          type: string
+          title: Title
+          example: CDC - UTI Guidelines
+      type: object
+      required:
+        - title
+      title: Reference
+    RouteEnum:
+      type: string
+      enum:
+        - BUCCAL
+        - CONTINUOUS IV
+        - ENDOCERVICAL
+        - IM
+        - IMPLANTATION
+        - INFUSION
+        - INHALATION
+        - INHALATION, ORAL
+        - INJECTION
+        - INSTILL
+        - INTRA-ANAL
+        - INTRACAVITARY
+        - INTRACRANIAL
+        - INTRAOCULAR
+        - INTRAPERITONEAL
+        - INTRAPLEURAL
+        - INTRATHECAL
+        - INTRATRACHEAL
+        - INTRAUTERINE
+        - INTRAVESICAL
+        - INTRAVITREAL
+        - IRRIGATION
+        - IV
+        - IV (INFUSION)
+        - IV BOLUS
+        - NASAL
+        - OPHTHALMIC
+        - ORAL
+        - OTIC
+        - PYELOCALYCEAL
+        - RECTAL
+        - SHOTR IV
+        - SUBCUTANEOUS
+        - SUBLINGUAL
+        - TOPICAL
+        - TRANSDERMAL
+        - URETHRAL
+        - VAGINAL
+        - DENTAL
+        - IV, INTERSTITIAL
+        - INTRA-ARTICULAR
+        - SUBGINGIVAL
+        - SPINAL
+        - INTRADERMAL
+        - INTRALESIONAL
+        - INTRAGLANDULAR
+        - INTRAVASCULAR
+        - BODY CAVITY
+        - BUCCAL/SUBLINGUAL
+        - INTRA-ARTERIAL
+        - IRRIGATION, URETHRAL
+        - INFILTRATION
+        - TRANSMUCOSAL
+        - SHORT IV INFUSION
+      title: RouteEnum
+    TestResult:
+      properties:
+        test_name:
+          type: string
+          title: Test Name
+        test_result_values:
+          items:
+            $ref: '#/components/schemas/TestResultItem'
+          type: array
+          title: Test Result Values
+      type: object
+      required:
+        - test_name
+        - test_result_values
+      title: TestResult
+    TestResultItem:
+      properties:
+        parameterName:
+          type: string
+          title: Parametername
+        parameterValue:
+          type: string
+          title: Parametervalue
+        parameterUnit:
+          type: string
+          title: Parameterunit
+        parameterRefRange:
+          type: string
+          title: Parameterrefrange
+      type: object
+      required:
+        - parameterName
+        - parameterValue
+        - parameterUnit
+        - parameterRefRange
+      title: TestResultItem
+    Therapy:
+      properties:
+        therapy_name:
+          type: string
+          title: Therapy Name
+        duration:
+          type: string
+          title: Duration
+        covers_symptomatic_treatment:
+          type: boolean
+          title: Covers Symptomatic Treatment
+        symptom_alleviation_medications:
+          anyOf:
+            - items:
+                $ref: '#/components/schemas/draftV8__Medication__1'
+              type: array
+            - type: null
+          title: Symptom Alleviation Medications
+          default: []
+      type: object
+      required:
+        - therapy_name
+        - duration
+        - covers_symptomatic_treatment
+      title: Therapy
+    TimingEnum:
+      type: string
+      enum:
+        - Stat
+        - Before Breakfast
+        - After Breakfast
+        - Before Lunch
+        - After Lunch
+        - Before Evening
+        - After Evening
+        - Before Dinner
+        - After Dinner
+        - After Food
+        - Empty Stomach
+      title: TimingEnum
+    TreatmentRecommendationInput:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        final_diagnoses:
+          items:
+            type: string
+          type: array
+          title: Final Diagnoses
+      type: object
+      required:
+        - session_id
+        - final_diagnoses
+      title: TreatmentRecommendationInput
+    TreatmentRecommendationOutput:
+      properties:
+        medications:
+          anyOf:
+            - items:
+                $ref: '#/components/schemas/draftV8__Medication__1'
+              type: array
+            - type: null
+          title: Medications
+          default: []
+        procedures:
+          anyOf:
+            - items:
+                $ref: '#/components/schemas/Procedure'
+              type: array
+            - type: null
+          title: Procedures
+          default: []
+        therapies:
+          anyOf:
+            - items:
+                $ref: '#/components/schemas/Therapy'
+              type: array
+            - type: null
+          title: Therapies
+          default: []
+        adjuvant_therapies:
+          anyOf:
+            - items:
+                type: string
+              type: array
+            - type: null
+          title: Adjuvant Therapies
+          default: []
+      type: object
+      title: TreatmentRecommendationOutput
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+              - type: string
+              - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+      type: object
+      required:
+        - loc
+        - msg
+        - type
+      title: ValidationError
+    Vitals:
+      properties:
+        weight_kg:
+          type: number
+          title: Weight Kg
+        height_cm:
+          type: number
+          title: Height Cm
+        bp_systolic:
+          type: integer
+          title: Bp Systolic
+        bp_diastolic:
+          type: integer
+          title: Bp Diastolic
+        temperature_c:
+          type: number
+          title: Temperature C
+        heart_rate:
+          type: integer
+          title: Heart Rate
+        respiration_rate:
+          type: integer
+          title: Respiration Rate
+        spo2:
+          type: integer
+          title: Spo2
+        lmp:
+          anyOf:
+            - type: string
+            - type: null
+          title: Lmp
+      type: object
+      required:
+        - weight_kg
+        - height_cm
+        - bp_systolic
+        - bp_diastolic
+        - temperature_c
+        - heart_rate
+        - respiration_rate
+        - spo2
+        - lmp
+      title: Vitals
+    draftV8__Medication__1:
+      properties:
+        generic_name:
+          type: string
+          title: Generic Name
+        active_ingredients:
+          items:
+            $ref: '#/components/schemas/ActiveIngredient'
+          type: array
+          title: Active Ingredients
+        route:
+          $ref: '#/components/schemas/RouteEnum'
+        frequency:
+          $ref: '#/components/schemas/FrequencyEnum'
+        dosage:
+          type: string
+          title: Dosage
+        duration:
+          $ref: '#/components/schemas/DurationEnum'
+        timing:
+          $ref: '#/components/schemas/TimingEnum'
+        notes:
+          anyOf:
+            - type: string
+            - type: null
+          title: Notes
+      type: object
+      required:
+        - generic_name
+        - active_ingredients
+        - route
+        - frequency
+        - dosage
+        - duration
+        - timing
+      title: Medication
+    draftV8__Medication__2:
+      properties:
+        name:
+          type: string
+          title: Name
+          example: Nitrofurantoin
+        dosage:
+          type: string
+          title: Dosage
+          example: 100 mg
+        frequency:
+          type: string
+          title: Frequency
+          example: Twice daily
+        route:
+          anyOf:
+            - type: string
+            - type: null
+          title: Route
+          example: Oral
+        indication:
+          anyOf:
+            - type: string
+            - type: null
+          title: Indication
+          example: UTI treatment
+        notes:
+          anyOf:
+            - type: string
+            - type: null
+          title: Notes
+          example: Take with food
+      type: object
+      required:
+        - name
+        - dosage
+        - frequency
+      title: Medication

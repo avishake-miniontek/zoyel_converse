@@ -61,14 +61,32 @@ logger = logging.getLogger(__name__)
 
 # System instruction to be applied to every chat completion
 SYSTEM_PROMPT = """
-You are Zoya, a helpful medical AI assistant who communicates through voice.
+You are Zoya, a helpful medical AI assistant who communicates through voice. Generally its a patient that you will be talking to.
+
+You are part of a secure medical software system with strict privacy and non-disclosure policies. Collecting and storing patient data is necessary and safe for providing accurate medical assistance, differential diagnosis, and recalling information later.
+
+At the beginning of a new conversation, or if patient data hasn't been collected yet, politely greet the patient and start asking for their personal and medical information step by step in a natural, conversational way. Gather details including age (in years, months, days), gender, city, country, current date, complaints (with symptom, severity, and since when for each), vitals (weight in kg, height in cm, blood pressure systolic/diastolic, temperature in C, heart rate, respiration rate, SpO2, LMP if applicable), physical examination findings, comorbidities, past history (illnesses and procedures), current medications, family history, allergies (drug and food), test documents, and test results. Ask follow-up questions to fill in any missing details or clarify ambiguities. Keep lists empty if no information is available. Once you have all required details, use the save_patient_data tool to store it without mentioning the tool to the user.
+
+If the user asks to recall or confirm any of their previously provided information, use the fetch_patient_data tool to retrieve only the relevant fields and share them naturally in your response.
+
+You have access to tools that can help answer questions. These tools will be executed automatically when needed with or without paramters depending on the use case. 
+You should never output tool calls, code blocks, or markdown — only respond naturally with the results.
+
+For example:
+If the user asks for the current time, and the tool provides "10:22 AM", you should simply say:
+"The current time is 10:22 AM."
+
+After the tool executes, you'll see the result and can respond to the user.
+
 Important instructions for your responses:
-1) Provide only plain text that will be converted to speech - never use markdown, asterisk *, code blocks, or special formatting.
+1) Provide only plain text that will be converted to speech - never use markdown, asterisk *, code blocks, or special formatting in your final response.
 2) Use natural, conversational language as if you're speaking to someone.
-3) Never use bullet points, numbered lists, or special characters.
+3) Never use bullet points, numbered lists, or special characters in your final response.
 4) Keep responses concise and clear since they will be spoken aloud.
 5) Express lists or multiple points in a natural spoken way using words like 'first', 'also', 'finally', etc.
 6) Use punctuation only for natural speech pauses (periods, commas, question marks).
+7) Never show the tool calls to the user - they are for internal use only
+8) After a tool executes, respond naturally with the result
 """
 
 @dataclass
@@ -376,7 +394,7 @@ class VoiceAIServer:
         
         # OpenAI client configuration (update with your settings)
         self.openai_client = AsyncOpenAI(
-            base_url="http://51.159.133.130/v1",
+            base_url="http://51.159.132.110/v1",
             api_key="zoyel-medgemma-27b-it-miniontek"
         )
 
@@ -517,25 +535,29 @@ class VoiceAIServer:
         return session
     
     async def process_message(self, session: Session, message: Message) -> Optional[Message]:
-        """Process user message and generate AI response using OpenAI function calling."""
+        """Process user message and generate AI response using function calling."""
         try:
-            # Add user message to context and normalize
+            # Add user message to context
             session.context.append({
-                "role": message.role,
+                "role": "user",
                 "content": message.content,
             })
-            session.context = self._normalize_context(session.context)
-
+            
             # Build base messages for API
             messages = self._build_messages_for_api(session)
+            final_response = None
+            max_tool_calls = 3
+            tool_call_count = 0
 
-            ai_content: Optional[str] = None
+            # Create a copy of messages for the API call
+            api_messages = messages.copy()
 
-            # Tool-calling loop (max 3 rounds)
-            for _ in range(3):
+            # Tool-calling loop
+            while tool_call_count < max_tool_calls:
+                # Make the API call
                 response = await self.openai_client.chat.completions.create(
                     model=session.model_name,
-                    messages=messages,
+                    messages=api_messages,
                     temperature=session.temperature,
                     max_tokens=session.max_tokens,
                     tools=self.tool_schemas,
@@ -544,105 +566,97 @@ class VoiceAIServer:
 
                 choice = response.choices[0]
                 msg = choice.message
-
-                # If the model requests tool calls
-                has_tool_calls = hasattr(msg, "tool_calls") and bool(msg.tool_calls)
-                if has_tool_calls:
-                    # Append the assistant message (with tool_calls) to the conversation we're sending to the API
-                    assistant_msg = {
-                        "role": "assistant",
-                        "content": msg.content or "",
-                        "tool_calls": [
-                            {
-                                "id": tc.id,
-                                "type": tc.type,
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
-                                },
-                            }
-                            for tc in msg.tool_calls
-                        ],
-                    }
-                    messages.append(assistant_msg)
-
-                    # Execute each tool and append its result as a tool message
-                    for tc in msg.tool_calls:
-                        fn_name = tc.function.name
-                        raw_args = tc.function.arguments or "{}"
-                        try:
-                            args = json.loads(raw_args)
-                        except Exception:
-                            args = {}
-
-                        # Execute function
+                
+                # If this is a final response (no tool calls), use it as the final response
+                if not hasattr(msg, 'tool_calls') or not msg.tool_calls:
+                    final_response = msg.content or ""
+                    break
+            
+                # Add assistant's message with tool calls to the conversation
+                tool_calls = []
+                for tool_call in msg.tool_calls:
+                    tool_calls.append({
+                        "id": tool_call.id,
+                        "type": tool_call.type,
+                        "function": {
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments,
+                        }
+                    })
+            
+                api_messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls
+                })
+            
+                # Process tool calls
+                tool_call_count += 1
+                for tool_call in msg.tool_calls:
+                    fn_name = tool_call.function.name
+                    try:
+                        # Parse arguments
+                        args = json.loads(tool_call.function.arguments)
+                    
+                        # Execute the function
                         if fn_name in self.tool_functions:
                             fn = self.tool_functions[fn_name]
-                            try:
-                                if asyncio.iscoroutinefunction(fn):
-                                    result = await fn(**args)
-                                else:
-                                    result = fn(**args)
-                            except Exception as e:
-                                result = f"Error executing tool '{fn_name}': {e}"
-                        else:
-                            result = f"Unknown tool: {fn_name}"
-
-                        # Persist tool call
-                        try:
-                            self.db.save_tool_call(
-                                session_id=session.id,
-                                function_name=fn_name,
-                                arguments=json.dumps(args),
-                                result=str(result),
-                                message_id=None,
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to save tool call: {e}")
-
-                        # Append tool result message
-                        messages.append({
+                            if asyncio.iscoroutinefunction(fn):
+                                result = await fn(**args)
+                            else:
+                                result = fn(**args)
+                            
+                            # Add tool response to messages
+                            api_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "name": fn_name,
+                                "content": str(result)
+                            })
+                    
+                    except Exception as e:
+                        logger.error(f"Error executing tool {fn_name}: {e}")
+                        api_messages.append({
                             "role": "tool",
-                            "tool_call_id": tc.id,
+                            "tool_call_id": tool_call.id,
                             "name": fn_name,
-                            "content": str(result),
+                            "content": f"Error: {str(e)}"
                         })
-
-                    # Continue loop to let the model produce the final response
-                    continue
-                else:
-                    ai_content = msg.content or ""
-                    break
-
-            if ai_content is None:
-                ai_content = "I'm sorry, I couldn't complete the request."
+        
+            # If we don't have a final response yet, get one from the model
+            if final_response is None:
+                response = await self.openai_client.chat.completions.create(
+                    model=session.model_name,
+                    messages=api_messages,
+                    temperature=session.temperature,
+                    max_tokens=session.max_tokens,
+                )
+                final_response = response.choices[0].message.content or "I'm sorry, I couldn't complete the request."
 
             # Create response message
-            response_message = Message(
+            response_msg = Message(
                 id=str(uuid.uuid4()),
                 session_id=session.id,
                 role="assistant",
-                content=ai_content,
-                timestamp=datetime.now(),
-                message_type="text",
+                content=final_response,
+                timestamp=datetime.utcnow(),
+                message_type="text"
             )
-
-            # Add to context (store only final assistant text)
+        
+            # Add assistant's final response to context
             session.context.append({
                 "role": "assistant",
-                "content": ai_content,
+                "content": final_response,
             })
-            session.context = self._normalize_context(session.context)
-
-            # Persist
-            self.db.save_message(response_message)
+        
+            # Save session to update context
             self.db.save_session(session)
-
-            return response_message
-
+        
+            return response_msg
+        
         except Exception as e:
             logger.error(f"Error processing message: {e}")
-            traceback.print_exc()
+            logger.error(traceback.format_exc())
             return None
     
     async def handle_client_message(self, websocket, message_data: Dict):

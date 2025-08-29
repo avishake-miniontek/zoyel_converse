@@ -10,16 +10,19 @@ def search_web(query: str) -> str:
 
 def search_web_schema():
     return {
-        "name": "search_web",
-        "description": "Search the web for the given query and return a brief summary.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search query string"
-                }
-            },
-            "required": ["query"]
-        },
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": "Search the web for the given query and return a brief summary.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query string"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
     }

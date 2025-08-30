@@ -6,7 +6,6 @@ Features:
 - Database storage for messages
 - Voice processing (Whisper + Kokoro TTS)
 - Tool call handling
-- Model Context Protocol (MCP)
 - Reconnection handling
 - Error recovery
 """
@@ -14,22 +13,17 @@ Features:
 import asyncio
 import websockets
 import json
-import sqlite3
+from sqlalchemy import create_engine, Column, String, DateTime, Boolean, Text, LargeBinary, ForeignKey, Float, Integer
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 import uuid
 import logging
 import traceback
-import time
 import io
 import base64
-import wave
 import numpy as np
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, asdict
-from contextlib import asynccontextmanager
-import aiohttp
-import threading
-from pathlib import Path
+from typing import Dict, List, Optional
+from dataclasses import dataclass
 from tools import TOOL_FUNCTIONS, TOOL_SCHEMAS
 
 # External dependencies (install with: pip install openai transformers torch torchaudio kokoro-tts)
@@ -43,10 +37,6 @@ except ImportError as e:
     print(f"Missing dependency: {e}")
     print("Install with: pip install openai transformers torch torchaudio kokoro-tts")
     exit(1)
-
-# Register SQLite adapters for datetime
-sqlite3.register_adapter(datetime, lambda val: val.isoformat())
-sqlite3.register_converter("TIMESTAMP", lambda val: datetime.fromisoformat(val.decode('utf-8') if isinstance(val, bytes) else val))
 
 # Configure logging
 logging.basicConfig(
@@ -113,127 +103,134 @@ class Session:
     context_max_tokens: int = 128000
     is_active: bool = True
 
+class Base(DeclarativeBase):
+    pass
+
+class SessionModel(Base):
+    __tablename__ = 'sessions'
+    id = Column(String, primary_key=True)
+    user_id = Column(String, nullable=False)
+    created_at = Column(DateTime)
+    last_activity = Column(DateTime)
+    context = Column(Text)
+    model_name = Column(Text)
+    temperature = Column(Float)
+    max_tokens = Column(Integer)
+    is_active = Column(Boolean)
+
+class MessageModel(Base):
+    __tablename__ = 'messages'
+    id = Column(String, primary_key=True)
+    session_id = Column(String, ForeignKey('sessions.id'))
+    role = Column(String)
+    content = Column(Text)
+    timestamp = Column(DateTime)
+    message_type = Column(String)
+    msg_metadata = Column("metadata", Text)
+    audio_data = Column(LargeBinary)
+
+class ToolCallModel(Base):
+    __tablename__ = 'tool_calls'
+    id = Column(String, primary_key=True)
+    session_id = Column(String, ForeignKey('sessions.id'))
+    message_id = Column(String, ForeignKey('messages.id'))
+    function_name = Column(String)
+    arguments = Column(Text)
+    result = Column(Text)
+    timestamp = Column(DateTime)
+
 class DatabaseManager:
     def __init__(self, db_path: str = "voice_ai.db"):
         self.db_path = db_path
+        self.engine = create_engine(f"sqlite:///{self.db_path}")
+        self.Session = sessionmaker(bind=self.engine)
         self.init_database()
     
     def init_database(self):
         """Initialize SQLite database with required tables"""
-        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS sessions (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    created_at TIMESTAMP,
-                    last_activity TIMESTAMP,
-                    context TEXT,
-                    model_name TEXT,
-                    temperature REAL,
-                    max_tokens INTEGER,
-                    is_active BOOLEAN
-                )
-            """)
-            
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT,
-                    role TEXT,
-                    content TEXT,
-                    timestamp TIMESTAMP,
-                    message_type TEXT,
-                    metadata TEXT,
-                    audio_data BLOB,
-                    FOREIGN KEY (session_id) REFERENCES sessions (id)
-                )
-            """)
-            
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS tool_calls (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT,
-                    message_id TEXT,
-                    function_name TEXT,
-                    arguments TEXT,
-                    result TEXT,
-                    timestamp TIMESTAMP,
-                    FOREIGN KEY (session_id) REFERENCES sessions (id),
-                    FOREIGN KEY (message_id) REFERENCES messages (id)
-                )
-            """)
-            
-            conn.commit()
+        Base.metadata.create_all(bind=self.engine)
     
     def save_session(self, session: Session):
         """Save or update session in database"""
-        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES) as conn:
-            conn.execute("""
-                INSERT OR REPLACE INTO sessions 
-                (id, user_id, created_at, last_activity, context, model_name, temperature, max_tokens, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                session.id, session.user_id, session.created_at, session.last_activity,
-                json.dumps(session.context), session.model_name, session.temperature,
-                session.max_tokens, session.is_active
-            ))
-            conn.commit()
+        with self.Session() as sess:
+            context_str = json.dumps(session.context)
+            model = sess.query(SessionModel).filter_by(id=session.id).first()
+            if model:
+                model.user_id = session.user_id
+                model.created_at = session.created_at
+                model.last_activity = session.last_activity
+                model.context = context_str
+                model.model_name = session.model_name
+                model.temperature = session.temperature
+                model.max_tokens = session.max_tokens
+                model.is_active = session.is_active
+            else:
+                model = SessionModel(
+                    id=session.id,
+                    user_id=session.user_id,
+                    created_at=session.created_at,
+                    last_activity=session.last_activity,
+                    context=context_str,
+                    model_name=session.model_name,
+                    temperature=session.temperature,
+                    max_tokens=session.max_tokens,
+                    is_active=session.is_active
+                )
+                sess.add(model)
+            sess.commit()
     
     def load_session(self, session_id: str) -> Optional[Session]:
         """Load session from database"""
-        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES) as conn:
-            cursor = conn.execute("""
-                SELECT * FROM sessions WHERE id = ? AND is_active = 1
-            """, (session_id,))
-            row = cursor.fetchone()
-            
+        with self.Session() as sess:
+            row = sess.query(SessionModel).filter_by(id=session_id, is_active=True).first()
             if row:
                 return Session(
-                    id=row[0],
-                    user_id=row[1],
-                    created_at=row[2],
-                    last_activity=row[3],
-                    context=json.loads(row[4]) if row[4] else [],
-                    model_name=row[5],
-                    temperature=row[6],
-                    max_tokens=row[7],
-                    is_active=bool(row[8])
+                    id=row.id,
+                    user_id=row.user_id,
+                    created_at=row.created_at,
+                    last_activity=row.last_activity,
+                    context=json.loads(row.context) if row.context else [],
+                    model_name=row.model_name,
+                    temperature=row.temperature,
+                    max_tokens=row.max_tokens,
+                    is_active=row.is_active
                 )
         return None
     
     def save_message(self, message: Message):
         """Save message to database"""
-        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES) as conn:
-            conn.execute("""
-                INSERT INTO messages 
-                (id, session_id, role, content, timestamp, message_type, metadata, audio_data)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                message.id, message.session_id, message.role, message.content,
-                message.timestamp, message.message_type,
-                json.dumps(message.metadata) if message.metadata else None,
-                message.audio_data
-            ))
-            conn.commit()
+        with self.Session() as sess:
+            metadata_str = json.dumps(message.metadata) if message.metadata else None
+            model = MessageModel(
+                id=message.id,
+                session_id=message.session_id,
+                role=message.role,
+                content=message.content,
+                timestamp=message.timestamp,
+                message_type=message.message_type,
+                metadata=metadata_str,
+                audio_data=message.audio_data
+            )
+            sess.add(model)
+            sess.commit()
     
     def get_session_messages(self, session_id: str, limit: int = 50) -> List[Message]:
         """Get recent messages for a session"""
-        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES) as conn:
-            cursor = conn.execute("""
-                SELECT * FROM messages 
-                WHERE session_id = ? 
-                ORDER BY timestamp DESC LIMIT ?
-            """, (session_id, limit))
-            
+        with self.Session() as sess:
+            rows = sess.query(MessageModel).filter_by(session_id=session_id)\
+                .order_by(MessageModel.timestamp.desc()).limit(limit).all()
             messages = []
-            for row in cursor.fetchall():
+            for row in rows:
                 messages.append(Message(
-                    id=row[0], session_id=row[1], role=row[2], content=row[3],
-                    timestamp=row[4], message_type=row[5],
-                    metadata=json.loads(row[6]) if row[6] else None,
-                    audio_data=row[7]
+                    id=row.id,
+                    session_id=row.session_id,
+                    role=row.role,
+                    content=row.content,
+                    timestamp=row.timestamp,
+                    message_type=row.message_type,
+                    metadata=json.loads(row.msg_metadata) if row.msg_metadata else None,
+                    audio_data=row.audio_data
                 ))
-            
             return list(reversed(messages))
 
     def save_tool_call(
@@ -246,24 +243,18 @@ class DatabaseManager:
     ) -> str:
         """Persist a tool/function call record to the database and return its id."""
         tool_call_id = str(uuid.uuid4())
-        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES) as conn:
-            conn.execute(
-                """
-                INSERT INTO tool_calls 
-                (id, session_id, message_id, function_name, arguments, result, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    tool_call_id,
-                    session_id,
-                    message_id,
-                    function_name,
-                    arguments,
-                    result,
-                    datetime.now(),
-                ),
+        with self.Session() as sess:
+            model = ToolCallModel(
+                id=tool_call_id,
+                session_id=session_id,
+                message_id=message_id,
+                function_name=function_name,
+                arguments=arguments,
+                result=result,
+                timestamp=datetime.now()
             )
-            conn.commit()
+            sess.add(model)
+            sess.commit()
         return tool_call_id
 
 class VoiceProcessor:
@@ -318,7 +309,6 @@ class VoiceProcessor:
                 generator = self.tts_pipeline(text, voice=voice) if voice else self.tts_pipeline(text)
                 # collect all generated chunks into one audio array
                 audio_arrays = [audio for (_, _, audio) in generator]
-                import numpy as np
                 return np.concatenate(audio_arrays, axis=0)
 
             audio = await loop.run_in_executor(None, synth)
@@ -333,33 +323,6 @@ class VoiceProcessor:
         except Exception as e:
             logger.error(f"Text-to-speech error (kokoro): {e}")
             return b""
-
-class ModelContextProtocol:
-    """Handle Model Context Protocol (MCP) for tool integration"""
-    
-    def __init__(self):
-        # Use the imported TOOL_FUNCTIONS directly
-        self.available_tools = TOOL_FUNCTIONS
-    
-    async def handle_tool_call(self, function_name: str, arguments: Dict) -> Dict:
-        """Handle tool function calls"""
-        try:
-            if function_name in self.available_tools:
-                # Get the function
-                func = self.available_tools[function_name]
-                
-                # Check if it's an async function
-                if asyncio.iscoroutinefunction(func):
-                    result = await func(**arguments)
-                else:
-                    result = func(**arguments)
-                    
-                return {"success": True, "result": result}
-            else:
-                return {"success": False, "error": f"Unknown function: {function_name}"}
-        except Exception as e:
-            logger.error(f"Tool call error: {e}")
-            return {"success": False, "error": str(e)}
 
 class VoiceAIServer:
     def __init__(self, host: str = "localhost", port: int = 8765):
@@ -627,7 +590,7 @@ class VoiceAIServer:
                 session_id=session.id,
                 role="assistant",
                 content=final_response,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(),
                 message_type="text"
             )
         

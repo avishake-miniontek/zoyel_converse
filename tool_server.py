@@ -557,6 +557,14 @@ class VoiceAIServer:
                             else:
                                 result = fn(**args)
                             
+                            self.db.save_tool_call(
+                                session_id=session.id,
+                                function_name=fn_name,
+                                arguments=tool_call.function.arguments,
+                                result=str(result),
+                                message_id=None
+                            )
+
                             # Add tool response to messages
                             api_messages.append({
                                 "role": "tool",
@@ -567,6 +575,13 @@ class VoiceAIServer:
                     
                     except Exception as e:
                         logger.error(f"Error executing tool {fn_name}: {e}")
+                        self.db.save_tool_call(
+                            session_id=session.id,
+                            function_name=fn_name,
+                            arguments=tool_call.function.arguments,
+                            result=f"Error: {str(e)}",
+                            message_id=None
+                        )
                         api_messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,

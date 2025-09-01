@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Voice AI Server - Complete WebSocket server with OpenAI-compatible API integration
+Voice AI Server - Complete WebSocket server with manual tool call processing
 Features:
 - Multi-client session management
 - Database storage for messages
 - Voice processing (Whisper + Kokoro TTS)
-- Tool call handling
+- Manual tool call parsing and execution
 - Reconnection handling
 - Error recovery
 """
@@ -13,6 +13,7 @@ Features:
 import asyncio
 import websockets
 import json
+import re
 from sqlalchemy import create_engine, Column, String, DateTime, Boolean, Text, LargeBinary, ForeignKey, Float, Integer
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 import uuid
@@ -24,7 +25,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from dataclasses import dataclass
-from tools import TOOL_FUNCTIONS, TOOL_SCHEMAS
+from tools import TOOL_FUNCTIONS
 
 # External dependencies (install with: pip install openai transformers torch torchaudio kokoro-tts)
 try:
@@ -51,16 +52,27 @@ logger = logging.getLogger(__name__)
 
 # System instruction to be applied to every chat completion
 SYSTEM_PROMPT = """
-You are Zoya, a helpful medical AI assistant who communicates through voice. Generally its a patient that you will be talking to.
+You are Zoya, a helpful medical AI assistant who communicates through voice. Generally it's a patient that you will be talking to.
 You are part of a secure medical software system with strict privacy and non-disclosure policies. Collecting and storing patient data is necessary and safe for providing accurate medical assistance, differential diagnosis, and recalling information later.
-You have access to tools that can help answer questions. These tools will be executed automatically when needed with or without parameters depending on the use case.
-You should never output tool calls, code blocks, or markdown — only respond naturally with the results.
-For example:
-If the user asks for the current time, and the tool provides "10:22 AM", you should simply say:
-"The current time is 10:22 AM."
-After the tool executes, you'll see the result and can respond to the user.
 
-At the beginning of every conversation, first use the fetch_patient_data tool to check for and load any existing patient data for this session. If no data exists or it's incomplete, politely greet the patient and start asking for their personal and medical information step by step in a natural, conversational way. Gather details including age (in years, months, days), gender, city, country, current date, complaints (with symptom, severity, and since when for each), vitals (weight in kg, height in cm, blood pressure systolic/diastolic, temperature in C, heart rate, respiration rate, SpO2, LMP if applicable), physical examination findings, comorbidities, past history (illnesses and procedures), current medications, family history, allergies (drug and food), test documents, and test results. Ask follow-up questions to fill in any missing details or clarify ambiguities. Keep lists empty if no information is available. Once you have collected new or updated details, use the save_patient_data tool to store or update it without mentioning the tool to the user.
+You have access to tools that can help answer questions. When you need to use a tool, wrap the function call in <tool_call></tool_call> tags like this:
+
+<tool_call>get_time()</tool_call>
+<tool_call>get_weather('New York')</tool_call>
+<tool_call>calculate('2 + 2')</tool_call>
+<tool_call>save_patient_data(session_id='123', age_years=25, complaints=[{'symptom': 'headache', 'severity': 'moderate', 'since': '2 days'}])</tool_call>
+<tool_call>fetch_patient_data(session_id='123')</tool_call>
+
+Available tools:
+- get_time(): Get current time
+- get_weather(location): Get weather for a location
+- calculate(expression): Perform calculations
+- save_patient_data(session_id, **kwargs): Save/update patient medical data
+- fetch_patient_data(session_id): Retrieve patient medical data
+- search_web(query): Search the internet
+
+At the beginning of every conversation, first use the fetch_patient_data tool to check for and load any existing patient data for this session. If no data exists or it's incomplete, politely greet the patient and start asking for their personal and medical information step by step in a natural, conversational way. Gather details including age (in years, months, days), gender, city, country, complaints (with symptom, severity, and since when for each), vitals (weight in kg, height in cm, blood pressure systolic/diastolic, temperature in C, heart rate, respiration rate, SpO2, LMP if applicable), physical examination findings, comorbidities, past history (illnesses and procedures), current medications, family history, allergies (drug and food), test documents, and test results. Do not ask for the current date; use the get_time tool to obtain it when needed for the date field in save_patient_data. Ask follow-up questions to fill in any missing details or clarify ambiguities. Keep lists empty if no information is available. Once you have collected new or updated details, use the save_patient_data tool to store or update it.
+
 If the user asks to recall or confirm any of their previously provided information, use the fetch_patient_data tool to retrieve only the relevant fields and share them naturally in your response.
 
 Important instructions for your responses:
@@ -71,8 +83,7 @@ Important instructions for your responses:
 4) Keep responses concise and clear since they will be spoken aloud.
 5) Express lists or multiple points in a natural spoken way using words like 'first', 'also', 'finally', etc.
 6) Use punctuation only for natural speech pauses (periods, commas, question marks).
-7) Never show the tool calls to the user - they are for internal use only
-8) After a tool executes, respond naturally with the result
+7) The tool calls will be executed automatically and removed from your response before it's spoken.
 """
 
 @dataclass
@@ -95,7 +106,7 @@ class Session:
     context: List[Dict]
     model_name: str
     temperature: float = 0.3
-    max_tokens: int = 256
+    max_tokens: int = 1024
     context_max_tokens: int = 128000
     is_active: bool = True
 
@@ -326,9 +337,8 @@ class VoiceAIServer:
         self.port = port
         self.db = DatabaseManager()
         self.voice_processor = VoiceProcessor()  # You can pass a different model here, e.g., VoiceProcessor("openai/whisper-small")
-        # Register tool functions and schemas for OpenAI function calling
+        # Register tool functions for manual execution
         self.tool_functions = TOOL_FUNCTIONS
-        self.tool_schemas = TOOL_SCHEMAS
         self.sessions: Dict[str, Session] = {}
         self.connected_clients: Dict[str, websockets.WebSocketServerProtocol] = {}
         # Per-session locks to serialize processing and avoid role alternation errors
@@ -428,6 +438,117 @@ class VoiceAIServer:
         messages.extend(convo)
         return messages
     
+    def _parse_tool_calls(self, text: str) -> List[Dict]:
+        """Parse tool calls from text using regex to find <tool_call>function_name(args)</tool_call> patterns."""
+        tool_call_pattern = r'<tool_call>(.*?)</tool_call>'
+        matches = re.findall(tool_call_pattern, text, re.DOTALL)
+        
+        tool_calls = []
+        for match in matches:
+            match = match.strip()
+            # Parse function name and arguments
+            func_pattern = r'(\w+)\((.*)\)'
+            func_match = re.match(func_pattern, match)
+            if func_match:
+                func_name = func_match.group(1)
+                args_str = func_match.group(2).strip()
+                
+                tool_calls.append({
+                    'function_name': func_name,
+                    'arguments_str': args_str,
+                    'raw_call': match
+                })
+        
+        return tool_calls
+    
+    def _remove_tool_calls(self, text: str) -> str:
+        """Remove all <tool_call>...</tool_call> blocks from text."""
+        tool_call_pattern = r'<tool_call>.*?</tool_call>'
+        cleaned_text = re.sub(tool_call_pattern, '', text, flags=re.DOTALL)
+        # Clean up extra whitespace
+        cleaned_text = re.sub(r'\n\s*\n', '\n', cleaned_text)
+        return cleaned_text.strip()
+    
+    def _parse_function_args(self, args_str: str, session_id: str) -> Dict:
+        """Parse function arguments from string, handling various formats."""
+        if not args_str:
+            return {}
+        
+        try:
+            # Try to evaluate as Python expression (for simple cases)
+            # This is a simplified parser - you might want to use a proper parser for complex cases
+            import ast
+            
+            # Handle session_id injection for patient data functions
+            if 'session_id' not in args_str and session_id:
+                if args_str:
+                    args_str = f"session_id='{session_id}', {args_str}"
+                else:
+                    args_str = f"session_id='{session_id}'"
+            
+            # Create a simple namespace for evaluation
+            namespace = {'session_id': session_id}
+            
+            # Handle simple function calls like func() or func('arg') or func(arg1='value', arg2=123)
+            if '=' in args_str:
+                # Keyword arguments
+                pairs = []
+                current_pair = ""
+                paren_count = 0
+                quote_char = None
+                
+                for char in args_str:
+                    if quote_char:
+                        current_pair += char
+                        if char == quote_char:
+                            quote_char = None
+                    elif char in ['"', "'"]:
+                        quote_char = char
+                        current_pair += char
+                    elif char == '(':
+                        paren_count += 1
+                        current_pair += char
+                    elif char == ')':
+                        paren_count -= 1
+                        current_pair += char
+                    elif char == ',' and paren_count == 0:
+                        pairs.append(current_pair.strip())
+                        current_pair = ""
+                    else:
+                        current_pair += char
+                
+                if current_pair.strip():
+                    pairs.append(current_pair.strip())
+                
+                result = {}
+                for pair in pairs:
+                    if '=' in pair:
+                        key, value = pair.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        
+                        # Try to evaluate the value
+                        try:
+                            result[key] = ast.literal_eval(value)
+                        except:
+                            # If literal_eval fails, treat as string
+                            result[key] = value.strip('"\'')
+                    
+                return result
+            else:
+                # Positional argument (usually just one)
+                try:
+                    # Try to parse as literal
+                    value = ast.literal_eval(args_str)
+                    return {'arg': value}  # Generic key for positional args
+                except:
+                    # Treat as string
+                    return {'arg': args_str.strip('"\''), 'location': args_str.strip('"\''), 'expression': args_str.strip('"\''), 'query': args_str.strip('"\'')}
+        
+        except Exception as e:
+            logger.error(f"Error parsing function args '{args_str}': {e}")
+            return {'arg': args_str}
+    
     async def register_client(self, websocket, session_id: str):
         """Register a new client connection"""
         self.connected_clients[session_id] = websocket
@@ -476,8 +597,63 @@ class VoiceAIServer:
         
         return session
     
+    async def execute_tool_call(self, function_name: str, args: Dict, session_id: str) -> str:
+        """Execute a single tool call and return the result."""
+        try:
+            if function_name not in self.tool_functions:
+                return f"Error: Unknown function '{function_name}'"
+            
+            func = self.tool_functions[function_name]
+            
+            # Add session_id for patient data functions if not already present
+            if function_name in ["save_patient_data", "fetch_patient_data"] and "session_id" not in args:
+                args["session_id"] = session_id
+            
+            # Handle different argument patterns for different functions
+            if function_name == "get_time":
+                result = await func() if asyncio.iscoroutinefunction(func) else func()
+            elif function_name in ["get_weather", "search_web", "calculate"]:
+                # These typically take a single argument
+                if 'location' in args:
+                    result = await func(args['location']) if asyncio.iscoroutinefunction(func) else func(args['location'])
+                elif 'query' in args:
+                    result = await func(args['query']) if asyncio.iscoroutinefunction(func) else func(args['query'])
+                elif 'expression' in args:
+                    result = await func(args['expression']) if asyncio.iscoroutinefunction(func) else func(args['expression'])
+                elif 'arg' in args:
+                    result = await func(args['arg']) if asyncio.iscoroutinefunction(func) else func(args['arg'])
+                else:
+                    result = await func(**args) if asyncio.iscoroutinefunction(func) else func(**args)
+            else:
+                # Patient data functions and others that take keyword arguments
+                result = await func(**args) if asyncio.iscoroutinefunction(func) else func(**args)
+            
+            # Log the tool call
+            self.db.save_tool_call(
+                session_id=session_id,
+                function_name=function_name,
+                arguments=json.dumps(args),
+                result=str(result)
+            )
+            
+            return str(result)
+            
+        except Exception as e:
+            error_msg = f"Error executing {function_name}: {str(e)}"
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
+            
+            self.db.save_tool_call(
+                session_id=session_id,
+                function_name=function_name,
+                arguments=json.dumps(args),
+                result=error_msg
+            )
+            
+            return error_msg
+    
     async def process_message(self, session: Session, message: Message) -> Optional[Message]:
-        """Process user message and generate AI response using function calling."""
+        """Process user message and generate AI response with manual tool call handling."""
         try:
             # Add user message to context
             session.context.append({
@@ -485,116 +661,68 @@ class VoiceAIServer:
                 "content": message.content,
             })
             
-            # Build base messages for API
+            # Build messages for API
             messages = self._build_messages_for_api(session)
-            final_response = None
-            max_tool_calls = 3
-            tool_call_count = 0
-
-            # Create a copy of messages for the API call
-            api_messages = messages.copy()
-
-            # Tool-calling loop
-            while tool_call_count < max_tool_calls:
-                # Make the API call
+            
+            max_iterations = 5  # Prevent infinite loops
+            iteration_count = 0
+            
+            while iteration_count < max_iterations:
+                iteration_count += 1
+                
+                # Make the API call (without function calling - just regular completion)
                 response = await self.openai_client.chat.completions.create(
                     model=session.model_name,
-                    messages=api_messages,
+                    messages=messages,
                     temperature=session.temperature,
                     max_tokens=session.max_tokens,
-                    tools=self.tool_schemas,
-                    tool_choice="auto",
                 )
-
-                choice = response.choices[0]
-                msg = choice.message
                 
-                # If this is a final response (no tool calls), use it as the final response
-                if not hasattr(msg, 'tool_calls') or not msg.tool_calls:
-                    final_response = msg.content or ""
+                ai_response = response.choices[0].message.content or ""
+                
+                # Parse tool calls from the response
+                tool_calls = self._parse_tool_calls(ai_response)
+                
+                if not tool_calls:
+                    # No tool calls, this is the final response
+                    # Remove any remaining tool call tags and use as final response
+                    final_response = self._remove_tool_calls(ai_response)
                     break
-            
-                # Add assistant's message with tool calls to the conversation
-                tool_calls = []
-                for tool_call in msg.tool_calls:
-                    tool_calls.append({
-                        "id": tool_call.id,
-                        "type": tool_call.type,
-                        "function": {
-                            "name": tool_call.function.name,
-                            "arguments": tool_call.function.arguments,
-                        }
-                    })
-            
-                api_messages.append({
+                
+                # Execute tool calls
+                tool_results = []
+                for tool_call in tool_calls:
+                    function_name = tool_call['function_name']
+                    args_str = tool_call['arguments_str']
+                    raw_call = tool_call['raw_call']
+                    
+                    logger.info(f"Executing tool call: {function_name}({args_str})")
+                    
+                    # Parse arguments
+                    args = self._parse_function_args(args_str, session.id)
+                    
+                    # Execute the tool call
+                    result = await self.execute_tool_call(function_name, args, session.id)
+                    tool_results.append(f"Tool call {raw_call} returned: {result}")
+                
+                # Add the assistant's response with tool calls to messages
+                messages.append({
                     "role": "assistant",
-                    "content": None,
-                    "tool_calls": tool_calls
+                    "content": ai_response
+                })
+                
+                # Add tool results as a user message (simulating the results being provided back)
+                tool_results_text = "\n".join(tool_results)
+                messages.append({
+                    "role": "user",
+                    "content": f"Tool execution results:\n{tool_results_text}\n\nPlease provide your response based on these results."
                 })
             
-                # Process tool calls
-                tool_call_count += 1
-                for tool_call in msg.tool_calls:
-                    fn_name = tool_call.function.name
-                    try:
-                        # Parse arguments
-                        args = json.loads(tool_call.function.arguments)
-                    
-                        # Execute the function
-                        if fn_name in self.tool_functions:
-                            fn = self.tool_functions[fn_name]
-                            
-                            # Add session_id for patient data functions if not already present
-                            if fn_name in ["save_patient_data", "fetch_patient_data"] and "session_id" not in args:
-                                args["session_id"] = session.id
-                            
-                            if asyncio.iscoroutinefunction(fn):
-                                result = await fn(**args)
-                            else:
-                                result = fn(**args)
-                            
-                            self.db.save_tool_call(
-                                session_id=session.id,
-                                function_name=fn_name,
-                                arguments=tool_call.function.arguments,
-                                result=str(result),
-                                message_id=None
-                            )
-
-                            # Add tool response to messages
-                            api_messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "name": fn_name,
-                                "content": str(result)
-                            })
-                    
-                    except Exception as e:
-                        logger.error(f"Error executing tool {fn_name}: {e}")
-                        self.db.save_tool_call(
-                            session_id=session.id,
-                            function_name=fn_name,
-                            arguments=tool_call.function.arguments,
-                            result=f"Error: {str(e)}",
-                            message_id=None
-                        )
-                        api_messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": fn_name,
-                            "content": f"Error: {str(e)}"
-                        })
-        
-            # If we don't have a final response yet, get one from the model
-            if final_response is None:
-                response = await self.openai_client.chat.completions.create(
-                    model=session.model_name,
-                    messages=api_messages,
-                    temperature=session.temperature,
-                    max_tokens=session.max_tokens,
-                )
-                final_response = response.choices[0].message.content or "I'm sorry, I couldn't complete the request."
-
+            # If we exhausted iterations without a clean response, use the last response
+            if iteration_count >= max_iterations:
+                final_response = self._remove_tool_calls(ai_response)
+                logger.warning(f"Reached maximum iterations ({max_iterations}) for tool calls")
+            
             # Create response message
             response_msg = Message(
                 id=str(uuid.uuid4()),
@@ -661,16 +789,17 @@ class VoiceAIServer:
                             "message_id": ai_response.id
                         }))
                         
-                        # Generate and send audio response
-                        audio_data = await self.voice_processor.text_to_speech(ai_response.content)
-                        if audio_data:
-                            audio_b64 = base64.b64encode(audio_data).decode('utf-8')
-                            await websocket.send(json.dumps({
-                                "type": "audio_response",
-                                "audio_data": audio_b64,
-                                "session_id": session.id,
-                                "message_id": ai_response.id
-                            }))
+                        # Generate and send audio response (only if content is not empty)
+                        if ai_response.content.strip():
+                            audio_data = await self.voice_processor.text_to_speech(ai_response.content)
+                            if audio_data:
+                                audio_b64 = base64.b64encode(audio_data).decode('utf-8')
+                                await websocket.send(json.dumps({
+                                    "type": "audio_response",
+                                    "audio_data": audio_b64,
+                                    "session_id": session.id,
+                                    "message_id": ai_response.id
+                                }))
                 
                 elif message_type == "audio_message":
                     # Handle audio message
@@ -714,16 +843,17 @@ class VoiceAIServer:
                                 "message_id": ai_response.id
                             }))
                             
-                            # Generate and send audio response
-                            audio_data = await self.voice_processor.text_to_speech(ai_response.content)
-                            if audio_data:
-                                audio_b64 = base64.b64encode(audio_data).decode('utf-8')
-                                await websocket.send(json.dumps({
-                                    "type": "audio_response",
-                                    "audio_data": audio_b64,
-                                    "session_id": session.id,
-                                    "message_id": ai_response.id
-                                }))
+                            # Generate and send audio response (only if content is not empty)
+                            if ai_response.content.strip():
+                                audio_data = await self.voice_processor.text_to_speech(ai_response.content)
+                                if audio_data:
+                                    audio_b64 = base64.b64encode(audio_data).decode('utf-8')
+                                    await websocket.send(json.dumps({
+                                        "type": "audio_response",
+                                        "audio_data": audio_b64,
+                                        "session_id": session.id,
+                                        "message_id": ai_response.id
+                                    }))
                 
                 elif message_type == "get_history":
                     # Send conversation history

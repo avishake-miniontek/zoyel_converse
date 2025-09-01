@@ -5,11 +5,11 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import json
 import logging
+from .get_time import get_time
 
 logger = logging.getLogger(__name__)
 
 Base = declarative_base()
-
 
 class PatientData(Base):
     __tablename__ = "patient_data"
@@ -45,12 +45,10 @@ class PatientData(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-
 # Create database engine and session
 engine = create_engine("sqlite:///voice_ai.db")
 Base.metadata.create_all(engine)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
 
 def save_patient_data(
     session_id: str,
@@ -60,7 +58,7 @@ def save_patient_data(
     gender: str = "",
     city: str = "",
     country: str = "",
-    date: str = "",
+    date: str = None,  # Changed to None to allow automatic fetching
     complaints: List[Dict[str, str]] = None,
     weight_kg: int = 0,
     height_cm: int = 0,
@@ -83,7 +81,7 @@ def save_patient_data(
     test_results: List[str] = None,
 ) -> str:
     """
-    Save patient data to the database. Creates or updates existing record.
+    Save patient data to the database. Creates or updates existing record. If date is not provided, uses get_time to set it.
 
     Args:
         session_id: Unique session identifier
@@ -93,7 +91,7 @@ def save_patient_data(
         gender: Patient gender
         city: Patient city
         country: Patient country
-        date: Current date
+        date: Current date (if None, fetched via get_time)
         complaints: List of complaint objects with symptom, severity, since
         weight_kg: Weight in kilograms
         height_cm: Height in centimeters
@@ -119,6 +117,10 @@ def save_patient_data(
         Success message
     """
     try:
+        # Set date if not provided
+        if date is None:
+            date = get_time().split('T')[0]  # Extract YYYY-MM-DD from ISO 8601
+
         # Initialize empty lists if None
         if complaints is None:
             complaints = []
@@ -229,13 +231,12 @@ def save_patient_data(
         logger.error(f"Error saving patient data: {e}")
         return f"Error saving patient data: {str(e)}"
 
-
 def save_patient_data_schema():
     return {
         "type": "function",
         "function": {
             "name": "save_patient_data",
-            "description": "Save comprehensive patient medical data to the database. Use this tool once you have collected all necessary patient information through conversation.",
+            "description": "Save comprehensive patient medical data to the database. Use this tool once you have collected all necessary patient information through conversation. If date is not provided, it will be set automatically using get_time.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -261,7 +262,11 @@ def save_patient_data_schema():
                     "gender": {"type": "string", "description": "Patient gender"},
                     "city": {"type": "string", "description": "Patient city"},
                     "country": {"type": "string", "description": "Patient country"},
-                    "date": {"type": "string", "description": "Current date"},
+                    "date": {
+                        "type": "string",
+                        "description": "Current date (automatically set if not provided)",
+                        "default": None,
+                    },
                     "complaints": {
                         "type": "array",
                         "items": {

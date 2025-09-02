@@ -60,20 +60,61 @@ You have access to tools that can help answer questions. When you need to use a 
 <tool_call>get_time()</tool_call>
 <tool_call>get_weather('New York')</tool_call>
 <tool_call>calculate('2 + 2')</tool_call>
+<tool_call>save_patient_data(session_id='123', age={'years': 25, 'months': 0, 'days': 0}, complaints=[{'symptom': 'headache', 'severity': 'moderate', 'since': '2 days'}], vitals={'weight_kg': 60, 'height_cm': 162, 'bp_systolic': 110, 'bp_diastolic': 80, 'temperature_c': 37.6, 'heart_rate': 88, 'respiration_rate': 18, 'spo2': 99, 'lmp': '15-07-2025'})</tool_call>
 <tool_call>save_patient_data(session_id='123', age_years=25, complaints=[{'symptom': 'headache', 'severity': 'moderate', 'since': '2 days'}])</tool_call>
 <tool_call>fetch_patient_data(session_id='123')</tool_call>
+<tool_call>fetch_patient_data(session_id='123', fields=['allergies', 'vitals'])</tool_call>
 
 Available tools:
 - get_time(): Get current time
 - get_weather(location): Get weather for a location
 - calculate(expression): Perform calculations
-- save_patient_data(session_id, **kwargs): Save/update patient medical data
-- fetch_patient_data(session_id): Retrieve patient medical data
+- save_patient_data(session_id, **kwargs): Save/update patient medical data (supports nested JSON structure)
+- fetch_patient_data(session_id, fields=None): Retrieve patient medical data (optionally specific fields only)
 - search_web(query): Search the internet
 
-At the beginning of every conversation, first use the fetch_patient_data tool to check for and load any existing patient data for this session. If no data exists or it's incomplete, politely greet the patient and start asking for their personal and medical information step by step in a natural, conversational way. Gather details including age (in years, months, days), gender, city, country, complaints (with symptom, severity, and since when for each), vitals (weight in kg, height in cm, blood pressure systolic/diastolic, temperature in C, heart rate, respiration rate, SpO2, LMP if applicable), physical examination findings, comorbidities, past history (illnesses and procedures), current medications, family history, allergies (drug and food), test documents, and test results. Do not ask for the current date; use the get_time tool to obtain it when needed for the date field in save_patient_data. Ask follow-up questions to fill in any missing details or clarify ambiguities. Keep lists empty if no information is available. Once you have collected new or updated details, use the save_patient_data tool to store or update it.
+At the beginning of every conversation, first use the fetch_patient_data tool to check for and load any existing patient data for this session. If no data exists or it's incomplete, politely greet the patient and start asking for their personal and medical information step by step in a natural, conversational way. 
 
-If the user asks to recall or confirm any of their previously provided information, use the fetch_patient_data tool to retrieve only the relevant fields and share them naturally in your response.
+Gather details including:
+- Age (in years, months, days - can be passed as nested object or individual values)
+- Gender, city, country
+- Complaints (each with symptom, severity, and duration)
+- Vitals (weight in kg, height in cm, blood pressure systolic/diastolic, temperature in Celsius with decimals, heart rate, respiration rate, SpO2, LMP if applicable - can be passed as nested object or individual values)
+- Physical examination findings
+- Comorbidities
+- Past history including illnesses and procedures with dates when available
+- Current medications
+- Family history
+- Allergies (both drug and food allergies - can be passed as nested object or individual lists)
+- Test documents (URLs or file paths)
+- Test results (structured with test name and parameter details including values, units, and reference ranges)
+
+Do not ask for the current date; use the get_time tool to obtain it when needed for the date field in save_patient_data. The date will be automatically formatted as DD-MM-YYYY. Ask follow-up questions to fill in any missing details or clarify ambiguities. Keep lists empty if no information is available. 
+
+Once you have collected new or updated details, ALWAYS use the save_patient_data tool to store or update it immediately. Patient data persistence is CRITICAL for medical safety and continuity of care. If a save operation fails, retry it immediately with the same data. You can use either the nested JSON structure (recommended) or flat parameters:
+
+CRITICAL DATA STRUCTURE REQUIREMENTS:
+When using save_patient_data, you MUST follow these exact formats:
+
+For vitals, use individual fields: bp_systolic, bp_diastolic (NOT blood_pressure)
+For family_history, use a list of strings: ['Hypertension (Mother)', 'Breast Cancer (Maternal Aunt)']
+For current_medications, use simple strings: ['Levothyroxine 75mcg once daily']
+For past_history, use the nested format with separate arrays: past_history={'past_illnesses': [{'illness': 'UTI', 'date': '05-09-2023'}], 'previous_procedures': [{'procedure': 'Cystoscopy', 'date': '10-10-2023'}]}
+For test_results, use: test_result_values array with parameterName, parameterValue, parameterUnit, parameterRefRange
+
+CORRECT example:
+save_patient_data(session_id='123', vitals={'bp_systolic': 110, 'bp_diastolic': 80}, family_history=['Hypertension (Mother)'], current_medications=['Levothyroxine 75mcg once daily'])
+
+WRONG examples to avoid:
+- blood_pressure: '110/80 mmHg' (use bp_systolic: 110, bp_diastolic: 80)
+- family_history: {'mother': 'Hypertension'} (use family_history: ['Hypertension (Mother)'])
+- current_medications: [{'drug': 'X', 'dosage': 'Y'}] (use ['X Y'])
+
+
+
+IMPORTANT: After collecting ANY new patient information (even a single piece of data like age or one symptom), immediately save it using save_patient_data. Do not wait to collect all information before saving. Save incrementally as you gather data to ensure no information is lost. If you receive an error when saving, retry the save operation immediately. Patient data must never be lost due to technical issues.
+
+If the user asks to recall or confirm any of their previously provided information, use the fetch_patient_data tool to retrieve only the relevant fields and share them naturally in your response. The fetch function returns JSON with success status and structured data matching the target format.
 
 Important instructions for your responses:
 
@@ -106,7 +147,7 @@ class Session:
     context: List[Dict]
     model_name: str
     temperature: float = 0.3
-    max_tokens: int = 1024
+    max_tokens: int = 2048
     context_max_tokens: int = 128000
     is_active: bool = True
 
@@ -470,13 +511,11 @@ class VoiceAIServer:
         return cleaned_text.strip()
     
     def _parse_function_args(self, args_str: str, session_id: str) -> Dict:
-        """Parse function arguments from string, handling various formats."""
+        """Parse function arguments from string, handling various formats including nested objects."""
         if not args_str:
             return {}
         
         try:
-            # Try to evaluate as Python expression (for simple cases)
-            # This is a simplified parser - you might want to use a proper parser for complex cases
             import ast
             
             # Handle session_id injection for patient data functions
@@ -486,65 +525,153 @@ class VoiceAIServer:
                 else:
                     args_str = f"session_id='{session_id}'"
             
-            # Create a simple namespace for evaluation
-            namespace = {'session_id': session_id}
-            
-            # Handle simple function calls like func() or func('arg') or func(arg1='value', arg2=123)
-            if '=' in args_str:
-                # Keyword arguments
-                pairs = []
-                current_pair = ""
+            # For complex nested structures, try to evaluate the entire args_str as a function call
+            try:
+                # Create a safe evaluation environment
+                def safe_eval_dict(node):
+                    """Safely evaluate dictionary/list literals"""
+                    if isinstance(node, ast.Dict):
+                        return {safe_eval_dict(k): safe_eval_dict(v) for k, v in zip(node.keys, node.values)}
+                    elif isinstance(node, ast.List):
+                        return [safe_eval_dict(item) for item in node.elts]
+                    elif isinstance(node, ast.Constant):
+                        return node.value
+                    elif isinstance(node, ast.Str):  # For older Python versions
+                        return node.s
+                    elif isinstance(node, ast.Num):  # For older Python versions
+                        return node.n
+                    elif isinstance(node, ast.NameConstant):  # For older Python versions
+                        return node.value
+                    else:
+                        raise ValueError(f"Unsupported node type: {type(node)}")
+
+                # Parse the arguments string manually
+                result = {}
+                
+                # Split by commas, but respect nested structures
+                args_parts = []
+                current_part = ""
                 paren_count = 0
+                bracket_count = 0
+                brace_count = 0
                 quote_char = None
                 
-                for char in args_str:
+                i = 0
+                while i < len(args_str):
+                    char = args_str[i]
+                    
                     if quote_char:
-                        current_pair += char
-                        if char == quote_char:
+                        current_part += char
+                        if char == quote_char and (i == 0 or args_str[i-1] != '\\'):
                             quote_char = None
                     elif char in ['"', "'"]:
                         quote_char = char
-                        current_pair += char
+                        current_part += char
                     elif char == '(':
                         paren_count += 1
-                        current_pair += char
+                        current_part += char
                     elif char == ')':
                         paren_count -= 1
-                        current_pair += char
-                    elif char == ',' and paren_count == 0:
-                        pairs.append(current_pair.strip())
-                        current_pair = ""
+                        current_part += char
+                    elif char == '[':
+                        bracket_count += 1
+                        current_part += char
+                    elif char == ']':
+                        bracket_count -= 1
+                        current_part += char
+                    elif char == '{':
+                        brace_count += 1
+                        current_part += char
+                    elif char == '}':
+                        brace_count -= 1
+                        current_part += char
+                    elif char == ',' and paren_count == 0 and bracket_count == 0 and brace_count == 0:
+                        args_parts.append(current_part.strip())
+                        current_part = ""
                     else:
-                        current_pair += char
-                
-                if current_pair.strip():
-                    pairs.append(current_pair.strip())
-                
-                result = {}
-                for pair in pairs:
-                    if '=' in pair:
-                        key, value = pair.split('=', 1)
-                        key = key.strip()
-                        value = value.strip()
-                        
-                        # Try to evaluate the value
-                        try:
-                            result[key] = ast.literal_eval(value)
-                        except:
-                            # If literal_eval fails, treat as string
-                            result[key] = value.strip('"\'')
+                        current_part += char
                     
+                    i += 1
+                
+                if current_part.strip():
+                    args_parts.append(current_part.strip())
+                
+                # Parse each argument
+                for arg_part in args_parts:
+                    if '=' in arg_part:
+                        key, value_str = arg_part.split('=', 1)
+                        key = key.strip()
+                        value_str = value_str.strip()
+                        
+                        try:
+                            # Parse the value using AST
+                            parsed = ast.parse(value_str, mode='eval')
+                            value = safe_eval_dict(parsed.body)
+                            result[key] = value
+                        except Exception as parse_error:
+                            logger.warning(f"Failed to parse value '{value_str}' for key '{key}': {parse_error}")
+                            # Fallback: treat as string
+                            result[key] = value_str.strip('"\'')
+                
                 return result
-            else:
-                # Positional argument (usually just one)
-                try:
-                    # Try to parse as literal
-                    value = ast.literal_eval(args_str)
-                    return {'arg': value}  # Generic key for positional args
-                except:
-                    # Treat as string
-                    return {'arg': args_str.strip('"\''), 'location': args_str.strip('"\''), 'expression': args_str.strip('"\''), 'query': args_str.strip('"\'')}
-        
+                
+            except Exception as e:
+                logger.error(f"Complex parsing failed: {e}")
+                # Fallback to simpler parsing for basic cases
+                
+                if '=' in args_str:
+                    # Simple keyword arguments
+                    pairs = []
+                    current_pair = ""
+                    paren_count = 0
+                    quote_char = None
+                    
+                    for char in args_str:
+                        if quote_char:
+                            current_pair += char
+                            if char == quote_char:
+                                quote_char = None
+                        elif char in ['"', "'"]:
+                            quote_char = char
+                            current_pair += char
+                        elif char == '(':
+                            paren_count += 1
+                            current_pair += char
+                        elif char == ')':
+                            paren_count -= 1
+                            current_pair += char
+                        elif char == ',' and paren_count == 0:
+                            pairs.append(current_pair.strip())
+                            current_pair = ""
+                        else:
+                            current_pair += char
+                    
+                    if current_pair.strip():
+                        pairs.append(current_pair.strip())
+                    
+                    result = {}
+                    for pair in pairs:
+                        if '=' in pair:
+                            key, value = pair.split('=', 1)
+                            key = key.strip()
+                            value = value.strip()
+                            
+                            # Try to evaluate the value
+                            try:
+                                result[key] = ast.literal_eval(value)
+                            except:
+                                # If literal_eval fails, treat as string
+                                result[key] = value.strip('"\'')
+                        
+                    return result
+                else:
+                    # Positional argument
+                    try:
+                        value = ast.literal_eval(args_str)
+                        return {'arg': value}
+                    except:
+                        return {'arg': args_str.strip('"\''), 'location': args_str.strip('"\''), 'expression': args_str.strip('"\''), 'query': args_str.strip('"\'')}
+            
         except Exception as e:
             logger.error(f"Error parsing function args '{args_str}': {e}")
             return {'arg': args_str}

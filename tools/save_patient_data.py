@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-from sqlalchemy import create_engine, Column, String, Integer, Text, DateTime, JSON
+from sqlalchemy import create_engine, Column, String, Integer, Text, DateTime, JSON, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import json
@@ -15,33 +15,55 @@ class PatientData(Base):
     __tablename__ = "patient_data"
 
     session_id = Column(String, primary_key=True)
-    age_years = Column(Integer)
-    age_months = Column(Integer)
-    age_days = Column(Integer)
-    gender = Column(String)
-    city = Column(String)
-    country = Column(String)
-    date = Column(String)
-    complaints = Column(JSON)  # List of complaint objects
-    weight_kg = Column(Integer)
-    height_cm = Column(Integer)
-    bp_systolic = Column(Integer)
-    bp_diastolic = Column(Integer)
-    temperature_c = Column(Integer)
-    heart_rate = Column(Integer)
-    respiration_rate = Column(Integer)
-    spo2 = Column(Integer)
-    lmp = Column(String)
-    physical_examination = Column(Text)
-    comorbidities = Column(JSON)  # List
-    past_illnesses = Column(JSON)  # List
-    previous_procedures = Column(JSON)  # List
-    current_medications = Column(JSON)  # List
-    family_history = Column(JSON)  # List
-    drug_allergies = Column(JSON)  # List
-    food_allergies = Column(JSON)  # List
-    test_documents = Column(JSON)  # List
-    test_results = Column(JSON)  # List
+    
+    # Age structure (keeping flat for easier queries while maintaining JSON support)
+    age_years = Column(Integer, default=0)
+    age_months = Column(Integer, default=0)
+    age_days = Column(Integer, default=0)
+    
+    # Basic info
+    gender = Column(String, default="")
+    city = Column(String, default="")
+    country = Column(String, default="")
+    date = Column(String, default="")  # Format: DD-MM-YYYY to match your JSON
+    
+    # Complaints as JSON array
+    complaints = Column(JSON, default=list)  # List of complaint objects
+    
+    # Vitals - using Float for temperature, Integer for others
+    weight_kg = Column(Integer, default=0)
+    height_cm = Column(Integer, default=0)
+    bp_systolic = Column(Integer, default=0)
+    bp_diastolic = Column(Integer, default=0)
+    temperature_c = Column(Float, default=0.0)  # Changed to Float for decimal temperatures
+    heart_rate = Column(Integer, default=0)
+    respiration_rate = Column(Integer, default=0)
+    spo2 = Column(Integer, default=0)
+    lmp = Column(String, default="")  # Format: DD-MM-YYYY
+    
+    # Clinical findings
+    physical_examination = Column(Text, default="")
+    
+    # Medical history as JSON arrays
+    comorbidities = Column(JSON, default=list)  # List of strings
+    
+    # Past history - stored as JSON objects to support date information
+    past_illnesses = Column(JSON, default=list)  # List of {"illness": str, "date": str}
+    previous_procedures = Column(JSON, default=list)  # List of {"procedure": str, "date": str}
+    
+    # Current treatment
+    current_medications = Column(JSON, default=list)  # List of strings
+    
+    # Family and allergies
+    family_history = Column(JSON, default=list)  # List of strings
+    drug_allergies = Column(JSON, default=list)  # List of strings
+    food_allergies = Column(JSON, default=list)  # List of strings
+    
+    # Test data
+    test_documents = Column(JSON, default=list)  # List of URLs/paths
+    test_results = Column(JSON, default=list)  # List of test result objects
+    
+    # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -52,74 +74,111 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def save_patient_data(
     session_id: str,
+    # Age can be passed as nested dict or individual values
+    age: Optional[Dict[str, int]] = None,
     age_years: int = 0,
     age_months: int = 0,
     age_days: int = 0,
+    # Basic info
     gender: str = "",
     city: str = "",
     country: str = "",
-    date: str = None,  # Changed to None to allow automatic fetching
+    date: str = None,
+    # Complaints
     complaints: List[Dict[str, str]] = None,
+    # Vitals can be passed as nested dict or individual values
+    vitals: Optional[Dict[str, Any]] = None,
     weight_kg: int = 0,
     height_cm: int = 0,
     bp_systolic: int = 0,
     bp_diastolic: int = 0,
-    temperature_c: int = 0,
+    temperature_c: float = 0.0,  # Changed to float
     heart_rate: int = 0,
     respiration_rate: int = 0,
     spo2: int = 0,
     lmp: str = "",
+    # Clinical findings
     physical_examination: str = "",
     comorbidities: List[str] = None,
-    past_illnesses: List[str] = None,
-    previous_procedures: List[str] = None,
+    # Past history - can accept both formats
+    past_history: Optional[Dict[str, List[Dict]]] = None,
+    past_illnesses: List[Any] = None,  # Can be strings or objects
+    previous_procedures: List[Any] = None,  # Can be strings or objects
+    # Current treatment
     current_medications: List[str] = None,
     family_history: List[str] = None,
+    # Allergies - can be passed as nested dict or individual lists
+    allergies: Optional[Dict[str, List[str]]] = None,
     drug_allergies: List[str] = None,
     food_allergies: List[str] = None,
+    # Test data
     test_documents: List[str] = None,
-    test_results: List[str] = None,
+    test_results: List[Dict] = None,
 ) -> str:
     """
-    Save patient data to the database. Creates or updates existing record. If date is not provided, uses get_time to set it.
+    Save patient data to the database. Creates or updates existing record.
+    Supports both flat parameter style and nested JSON structure.
 
     Args:
         session_id: Unique session identifier
-        age_years: Patient age in years
-        age_months: Additional months of age
-        age_days: Additional days of age
+        age: Nested age object with years, months, days (optional)
+        age_years, age_months, age_days: Individual age components
         gender: Patient gender
         city: Patient city
         country: Patient country
-        date: Current date (if None, fetched via get_time)
+        date: Current date in DD-MM-YYYY format (auto-generated if None)
         complaints: List of complaint objects with symptom, severity, since
-        weight_kg: Weight in kilograms
-        height_cm: Height in centimeters
-        bp_systolic: Systolic blood pressure
-        bp_diastolic: Diastolic blood pressure
-        temperature_c: Temperature in Celsius
-        heart_rate: Heart rate
-        respiration_rate: Respiration rate
-        spo2: Oxygen saturation
-        lmp: Last menstrual period
+        vitals: Nested vitals object (optional)
+        weight_kg, height_cm, etc.: Individual vital components
         physical_examination: Physical examination findings
         comorbidities: List of comorbidities
-        past_illnesses: List of past illnesses
-        previous_procedures: List of previous procedures
+        past_history: Nested past history object (optional)
+        past_illnesses: List of past illnesses (strings or objects)
+        previous_procedures: List of previous procedures (strings or objects)
         current_medications: List of current medications
         family_history: List of family history items
-        drug_allergies: List of drug allergies
-        food_allergies: List of food allergies
-        test_documents: List of test documents
-        test_results: List of test results
+        allergies: Nested allergies object (optional)
+        drug_allergies, food_allergies: Individual allergy lists
+        test_documents: List of test document URLs
+        test_results: List of test result objects
 
     Returns:
-        Success message
+        Success/error message
     """
     try:
-        # Set date if not provided
+        # Set date if not provided - convert to DD-MM-YYYY format
         if date is None:
-            date = get_time().split('T')[0]  # Extract YYYY-MM-DD from ISO 8601
+            iso_date = get_time().split('T')[0]  # Get YYYY-MM-DD
+            year, month, day = iso_date.split('-')
+            date = f"{day}-{month}-{year}"  # Convert to DD-MM-YYYY
+
+        # Handle nested age structure
+        if age:
+            age_years = age.get("years", age_years)
+            age_months = age.get("months", age_months)
+            age_days = age.get("days", age_days)
+
+        # Handle nested vitals structure
+        if vitals:
+            weight_kg = vitals.get("weight_kg", weight_kg)
+            height_cm = vitals.get("height_cm", height_cm)
+            bp_systolic = vitals.get("bp_systolic", bp_systolic)
+            bp_diastolic = vitals.get("bp_diastolic", bp_diastolic)
+            temperature_c = vitals.get("temperature_c", temperature_c)
+            heart_rate = vitals.get("heart_rate", heart_rate)
+            respiration_rate = vitals.get("respiration_rate", respiration_rate)
+            spo2 = vitals.get("spo2", spo2)
+            lmp = vitals.get("lmp", lmp)
+
+        # Handle nested past_history structure
+        if past_history:
+            past_illnesses = past_history.get("past_illnesses", past_illnesses)
+            previous_procedures = past_history.get("previous_procedures", previous_procedures)
+
+        # Handle nested allergies structure
+        if allergies:
+            drug_allergies = allergies.get("drug_allergies", drug_allergies)
+            food_allergies = allergies.get("food_allergies", food_allergies)
 
         # Initialize empty lists if None
         if complaints is None:
@@ -143,6 +202,21 @@ def save_patient_data(
         if test_results is None:
             test_results = []
 
+        # Normalize past_illnesses and previous_procedures to object format
+        normalized_past_illnesses = []
+        for illness in past_illnesses:
+            if isinstance(illness, str):
+                normalized_past_illnesses.append({"illness": illness, "date": ""})
+            elif isinstance(illness, dict):
+                normalized_past_illnesses.append(illness)
+        
+        normalized_previous_procedures = []
+        for procedure in previous_procedures:
+            if isinstance(procedure, str):
+                normalized_previous_procedures.append({"procedure": procedure, "date": ""})
+            elif isinstance(procedure, dict):
+                normalized_previous_procedures.append(procedure)
+
         db = SessionLocal()
         try:
             # Check if patient data already exists
@@ -153,36 +227,71 @@ def save_patient_data(
             )
 
             if existing_patient:
-                # Update existing record
-                existing_patient.age_years = age_years
-                existing_patient.age_months = age_months
-                existing_patient.age_days = age_days
-                existing_patient.gender = gender
-                existing_patient.city = city
-                existing_patient.country = country
-                existing_patient.date = date
-                existing_patient.complaints = complaints
-                existing_patient.weight_kg = weight_kg
-                existing_patient.height_cm = height_cm
-                existing_patient.bp_systolic = bp_systolic
-                existing_patient.bp_diastolic = bp_diastolic
-                existing_patient.temperature_c = temperature_c
-                existing_patient.heart_rate = heart_rate
-                existing_patient.respiration_rate = respiration_rate
-                existing_patient.spo2 = spo2
-                existing_patient.lmp = lmp
-                existing_patient.physical_examination = physical_examination
-                existing_patient.comorbidities = comorbidities
-                existing_patient.past_illnesses = past_illnesses
-                existing_patient.previous_procedures = previous_procedures
-                existing_patient.current_medications = current_medications
-                existing_patient.family_history = family_history
-                existing_patient.drug_allergies = drug_allergies
-                existing_patient.food_allergies = food_allergies
-                existing_patient.test_documents = test_documents
-                existing_patient.test_results = test_results
+                # Update existing record with non-zero/non-empty values only
+                if age_years > 0:
+                    existing_patient.age_years = age_years
+                if age_months > 0:
+                    existing_patient.age_months = age_months
+                if age_days > 0:
+                    existing_patient.age_days = age_days
+                if gender:
+                    existing_patient.gender = gender
+                if city:
+                    existing_patient.city = city
+                if country:
+                    existing_patient.country = country
+                if date:
+                    existing_patient.date = date
+                
+                # Update complaints (replace if provided)
+                if complaints:
+                    existing_patient.complaints = complaints
+                
+                # Update vitals (only non-zero values)
+                if weight_kg > 0:
+                    existing_patient.weight_kg = weight_kg
+                if height_cm > 0:
+                    existing_patient.height_cm = height_cm
+                if bp_systolic > 0:
+                    existing_patient.bp_systolic = bp_systolic
+                if bp_diastolic > 0:
+                    existing_patient.bp_diastolic = bp_diastolic
+                if temperature_c > 0:
+                    existing_patient.temperature_c = temperature_c
+                if heart_rate > 0:
+                    existing_patient.heart_rate = heart_rate
+                if respiration_rate > 0:
+                    existing_patient.respiration_rate = respiration_rate
+                if spo2 > 0:
+                    existing_patient.spo2 = spo2
+                if lmp:
+                    existing_patient.lmp = lmp
+                
+                # Update text fields
+                if physical_examination:
+                    existing_patient.physical_examination = physical_examination
+                
+                # Update lists (replace if provided)
+                if comorbidities:
+                    existing_patient.comorbidities = comorbidities
+                if normalized_past_illnesses:
+                    existing_patient.past_illnesses = normalized_past_illnesses
+                if normalized_previous_procedures:
+                    existing_patient.previous_procedures = normalized_previous_procedures
+                if current_medications:
+                    existing_patient.current_medications = current_medications
+                if family_history:
+                    existing_patient.family_history = family_history
+                if drug_allergies:
+                    existing_patient.drug_allergies = drug_allergies
+                if food_allergies:
+                    existing_patient.food_allergies = food_allergies
+                if test_documents:
+                    existing_patient.test_documents = test_documents
+                if test_results:
+                    existing_patient.test_results = test_results
+                
                 existing_patient.updated_at = datetime.utcnow()
-
                 logger.info(f"Updated patient data for session: {session_id}")
 
             else:
@@ -208,8 +317,8 @@ def save_patient_data(
                     lmp=lmp,
                     physical_examination=physical_examination,
                     comorbidities=comorbidities,
-                    past_illnesses=past_illnesses,
-                    previous_procedures=previous_procedures,
+                    past_illnesses=normalized_past_illnesses,
+                    previous_procedures=normalized_previous_procedures,
                     current_medications=current_medications,
                     family_history=family_history,
                     drug_allergies=drug_allergies,
@@ -232,11 +341,12 @@ def save_patient_data(
         return f"Error saving patient data: {str(e)}"
 
 def save_patient_data_schema():
+    """Return the function schema for the save_patient_data tool"""
     return {
         "type": "function",
         "function": {
             "name": "save_patient_data",
-            "description": "Save comprehensive patient medical data to the database. Use this tool once you have collected all necessary patient information through conversation. If date is not provided, it will be set automatically using get_time.",
+            "description": "Save comprehensive patient medical data to the database. Supports both nested JSON structure and flat parameters. Use this tool once you have collected patient information through conversation.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -244,29 +354,30 @@ def save_patient_data_schema():
                         "type": "string",
                         "description": "Unique session identifier",
                     },
-                    "age_years": {
-                        "type": "integer",
-                        "description": "Patient age in years",
-                        "default": 0,
+                    # Age - support both nested and flat
+                    "age": {
+                        "type": "object",
+                        "description": "Nested age object",
+                        "properties": {
+                            "years": {"type": "integer", "default": 0},
+                            "months": {"type": "integer", "default": 0},
+                            "days": {"type": "integer", "default": 0}
+                        }
                     },
-                    "age_months": {
-                        "type": "integer",
-                        "description": "Additional months of age",
-                        "default": 0,
-                    },
-                    "age_days": {
-                        "type": "integer",
-                        "description": "Additional days of age",
-                        "default": 0,
-                    },
+                    "age_years": {"type": "integer", "description": "Age in years (alternative to nested age)", "default": 0},
+                    "age_months": {"type": "integer", "description": "Additional months", "default": 0},
+                    "age_days": {"type": "integer", "description": "Additional days", "default": 0},
+                    
+                    # Basic info
                     "gender": {"type": "string", "description": "Patient gender"},
                     "city": {"type": "string", "description": "Patient city"},
                     "country": {"type": "string", "description": "Patient country"},
                     "date": {
                         "type": "string",
-                        "description": "Current date (automatically set if not provided)",
-                        "default": None,
+                        "description": "Current date in DD-MM-YYYY format (auto-generated if not provided)",
                     },
+                    
+                    # Complaints
                     "complaints": {
                         "type": "array",
                         "items": {
@@ -279,66 +390,107 @@ def save_patient_data_schema():
                         },
                         "description": "List of patient complaints with symptom, severity, and duration",
                     },
-                    "weight_kg": {
-                        "type": "integer",
-                        "description": "Weight in kilograms",
-                        "default": 0,
+                    
+                    # Vitals - support both nested and flat
+                    "vitals": {
+                        "type": "object",
+                        "description": "Nested vitals object",
+                        "properties": {
+                            "weight_kg": {"type": "integer"},
+                            "height_cm": {"type": "integer"},
+                            "bp_systolic": {"type": "integer"},
+                            "bp_diastolic": {"type": "integer"},
+                            "temperature_c": {"type": "number"},
+                            "heart_rate": {"type": "integer"},
+                            "respiration_rate": {"type": "integer"},
+                            "spo2": {"type": "integer"},
+                            "lmp": {"type": "string"}
+                        }
                     },
-                    "height_cm": {
-                        "type": "integer",
-                        "description": "Height in centimeters",
-                        "default": 0,
-                    },
-                    "bp_systolic": {
-                        "type": "integer",
-                        "description": "Systolic blood pressure",
-                        "default": 0,
-                    },
-                    "bp_diastolic": {
-                        "type": "integer",
-                        "description": "Diastolic blood pressure",
-                        "default": 0,
-                    },
-                    "temperature_c": {
-                        "type": "integer",
-                        "description": "Temperature in Celsius",
-                        "default": 0,
-                    },
-                    "heart_rate": {
-                        "type": "integer",
-                        "description": "Heart rate",
-                        "default": 0,
-                    },
-                    "respiration_rate": {
-                        "type": "integer",
-                        "description": "Respiration rate",
-                        "default": 0,
-                    },
-                    "spo2": {
-                        "type": "integer",
-                        "description": "Oxygen saturation",
-                        "default": 0,
-                    },
-                    "lmp": {"type": "string", "description": "Last menstrual period"},
+                    "weight_kg": {"type": "integer", "description": "Weight in kg", "default": 0},
+                    "height_cm": {"type": "integer", "description": "Height in cm", "default": 0},
+                    "bp_systolic": {"type": "integer", "description": "Systolic BP", "default": 0},
+                    "bp_diastolic": {"type": "integer", "description": "Diastolic BP", "default": 0},
+                    "temperature_c": {"type": "number", "description": "Temperature in Celsius", "default": 0.0},
+                    "heart_rate": {"type": "integer", "description": "Heart rate", "default": 0},
+                    "respiration_rate": {"type": "integer", "description": "Respiration rate", "default": 0},
+                    "spo2": {"type": "integer", "description": "Oxygen saturation", "default": 0},
+                    "lmp": {"type": "string", "description": "Last menstrual period (DD-MM-YYYY)"},
+                    
+                    # Clinical findings
                     "physical_examination": {
                         "type": "string",
                         "description": "Physical examination findings",
                     },
+                    
+                    # Medical history
                     "comorbidities": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "List of comorbidities",
                     },
+                    
+                    # Past history - support both nested and flat
+                    "past_history": {
+                        "type": "object",
+                        "description": "Nested past history object",
+                        "properties": {
+                            "past_illnesses": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "illness": {"type": "string"},
+                                        "date": {"type": "string"}
+                                    }
+                                }
+                            },
+                            "previous_procedures": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "procedure": {"type": "string"},
+                                        "date": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }
+                    },
                     "past_illnesses": {
                         "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of past illnesses",
+                        "items": {
+                            "oneOf": [
+                                {"type": "string"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "illness": {"type": "string"},
+                                        "date": {"type": "string"}
+                                    }
+                                }
+                            ]
+                        },
+                        "description": "List of past illnesses (strings or objects with date)",
                     },
                     "previous_procedures": {
                         "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of previous medical procedures",
+                        "items": {
+                            "oneOf": [
+                                {"type": "string"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "procedure": {"type": "string"},
+                                        "date": {"type": "string"}
+                                    }
+                                }
+                            ]
+                        },
+                        "description": "List of previous procedures (strings or objects with date)",
                     },
+                    
+                    # Current treatment
                     "current_medications": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -348,6 +500,22 @@ def save_patient_data_schema():
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "List of family history items",
+                    },
+                    
+                    # Allergies - support both nested and flat
+                    "allergies": {
+                        "type": "object",
+                        "description": "Nested allergies object",
+                        "properties": {
+                            "drug_allergies": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            },
+                            "food_allergies": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            }
+                        }
                     },
                     "drug_allergies": {
                         "type": "array",
@@ -359,43 +527,37 @@ def save_patient_data_schema():
                         "items": {"type": "string"},
                         "description": "List of food allergies",
                     },
+                    
+                    # Test data
                     "test_documents": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of test documents",
+                        "description": "List of test document URLs",
                     },
                     "test_results": {
                         "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of test results",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "test_name": {"type": "string"},
+                                "test_result_values": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "parameterName": {"type": "string"},
+                                            "parameterValue": {"type": "string"},
+                                            "parameterUnit": {"type": "string"},
+                                            "parameterRefRange": {"type": "string"}
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "List of structured test results",
                     },
                 },
                 "required": ["session_id"],
-            },
-            "examples": [
-                {
-                    "input": "I've collected all the patient information",
-                    "call": {
-                        "name": "save_patient_data",
-                        "arguments": {
-                            "session_id": "abc123",
-                            "age_years": 35,
-                            "gender": "Female",
-                            "city": "Mumbai",
-                            "country": "India",
-                            "complaints": [
-                                {
-                                    "symptom": "Headache",
-                                    "severity": "Moderate",
-                                    "since": "3 days",
-                                }
-                            ],
-                            "weight_kg": 65,
-                            "height_cm": 160,
-                            "current_medications": ["Paracetamol 500mg"],
-                        },
-                    },
-                }
-            ],
-        },
+            }
+        }
     }

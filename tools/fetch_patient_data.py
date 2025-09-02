@@ -13,10 +13,10 @@ from .save_patient_data import PatientData
 engine = create_engine("sqlite:///voice_ai.db")
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-
-def fetch_patient_data(session_id: str, fields: List[str] = None) -> Dict[str, Any]:
+def fetch_patient_data(session_id: str, fields: List[str] = None) -> str:
     """
     Fetch patient data from the database for a specific session.
+    Returns data as JSON string to match the manual tool call parsing system.
 
     Args:
         session_id: Unique session identifier
@@ -26,7 +26,7 @@ def fetch_patient_data(session_id: str, fields: List[str] = None) -> Dict[str, A
                 family_history, allergies, test_documents, test_results
 
     Returns:
-        Dictionary containing requested patient data or error message
+        JSON string containing requested patient data or error message
     """
     try:
         db = SessionLocal()
@@ -39,13 +39,14 @@ def fetch_patient_data(session_id: str, fields: List[str] = None) -> Dict[str, A
             )
 
             if not patient:
-                return {
+                return json.dumps({
                     "success": False,
                     "message": "No patient data found for this session",
-                }
+                })
 
-            # Build complete patient data dictionary
+            # Build complete patient data dictionary in target JSON structure
             complete_data = {
+                "session_id": patient.session_id,
                 "age": {
                     "years": patient.age_years or 0,
                     "months": patient.age_months or 0,
@@ -61,7 +62,7 @@ def fetch_patient_data(session_id: str, fields: List[str] = None) -> Dict[str, A
                     "height_cm": patient.height_cm or 0,
                     "bp_systolic": patient.bp_systolic or 0,
                     "bp_diastolic": patient.bp_diastolic or 0,
-                    "temperature_c": patient.temperature_c or 0,
+                    "temperature_c": patient.temperature_c or 0.0,
                     "heart_rate": patient.heart_rate or 0,
                     "respiration_rate": patient.respiration_rate or 0,
                     "spo2": patient.spo2 or 0,
@@ -93,7 +94,7 @@ def fetch_patient_data(session_id: str, fields: List[str] = None) -> Dict[str, A
 
             # If specific fields requested, filter the data
             if fields:
-                filtered_data = {}
+                filtered_data = {"session_id": patient.session_id}  # Always include session_id
                 for field in fields:
                     if field in complete_data:
                         filtered_data[field] = complete_data[field]
@@ -102,25 +103,35 @@ def fetch_patient_data(session_id: str, fields: List[str] = None) -> Dict[str, A
                             f"Requested field '{field}' not found in patient data"
                         )
 
-                return {"success": True, "data": filtered_data}
+                return json.dumps({
+                    "success": True,
+                    "data": filtered_data
+                }, indent=2)
 
             # Return all data
-            return {"success": True, "data": complete_data}
+            return json.dumps({
+                "success": True,
+                "data": complete_data
+            }, indent=2)
 
         finally:
             db.close()
 
     except Exception as e:
         logger.error(f"Error fetching patient data: {e}")
-        return {"success": False, "message": f"Error fetching patient data: {str(e)}"}
+        return json.dumps({
+            "success": False,
+            "message": f"Error fetching patient data: {str(e)}"
+        })
 
 
 def fetch_patient_data_schema():
+    """Return the function schema for the fetch_patient_data tool"""
     return {
         "type": "function",
         "function": {
             "name": "fetch_patient_data",
-            "description": "Retrieve patient data from the database. Use this when the user asks to recall or confirm any of their previously provided medical information.",
+            "description": "Retrieve patient medical data from the database. Use this when the user asks to recall or confirm any of their previously provided medical information. Returns structured JSON with success status.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -131,7 +142,7 @@ def fetch_patient_data_schema():
                     "fields": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional list of specific fields to retrieve. Available: age, gender, city, country, date, complaints, vitals, physical_examination, comorbidities, past_history, current_medications, family_history, allergies, test_documents, test_results. If not specified, returns all data.",
+                        "description": "Optional list of specific fields to retrieve. Available: age, gender, city, country, date, complaints, vitals, physical_examination, comorbidities, past_history, current_medications, family_history, allergies, test_documents, test_results, metadata. If not specified, returns all data.",
                     },
                 },
                 "required": ["session_id"],

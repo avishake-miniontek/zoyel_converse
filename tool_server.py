@@ -60,17 +60,17 @@ You have access to tools that can help answer questions. When you need to use a 
 <tool_call>get_time()</tool_call>
 <tool_call>get_weather('New York')</tool_call>
 <tool_call>calculate('2 + 2')</tool_call>
-<tool_call>save_patient_data(session_id='123', age={'years': 25, 'months': 0, 'days': 0}, complaints=[{'symptom': 'headache', 'severity': 'moderate', 'since': '2 days'}], vitals={'weight_kg': 60, 'height_cm': 162, 'bp_systolic': 110, 'bp_diastolic': 80, 'temperature_c': 37.6, 'heart_rate': 88, 'respiration_rate': 18, 'spo2': 99, 'lmp': '15-07-2025'})</tool_call>
-<tool_call>save_patient_data(session_id='123', age_years=25, complaints=[{'symptom': 'headache', 'severity': 'moderate', 'since': '2 days'}])</tool_call>
-<tool_call>fetch_patient_data(session_id='123')</tool_call>
-<tool_call>fetch_patient_data(session_id='123', fields=['allergies', 'vitals'])</tool_call>
+<tool_call>save_patient_data(age={'years': 25, 'months': 0, 'days': 0}, complaints=[{'symptom': 'headache', 'severity': 'moderate', 'since': '2 days'}], vitals={'weight_kg': 60, 'height_cm': 162, 'bp_systolic': 110, 'bp_diastolic': 80, 'temperature_c': 37.6, 'heart_rate': 88, 'respiration_rate': 18, 'spo2': 99, 'lmp': '15-07-2025'})</tool_call>
+<tool_call>save_patient_data(age_years=25, complaints=[{'symptom': 'headache', 'severity': 'moderate', 'since': '2 days'}])</tool_call>
+<tool_call>fetch_patient_data()</tool_call>
+<tool_call>fetch_patient_data(fields=['allergies', 'vitals'])</tool_call>
 
 Available tools:
 - get_time(): Get current time
 - get_weather(location): Get weather for a location
 - calculate(expression): Perform calculations
-- save_patient_data(session_id, **kwargs): Save/update patient medical data (supports nested JSON structure)
-- fetch_patient_data(session_id, fields=None): Retrieve patient medical data (optionally specific fields only)
+- save_patient_data(**kwargs): Save/update patient medical data (supports nested JSON structure) - session_id is automatically provided
+- fetch_patient_data(fields=None): Retrieve patient medical data (optionally specific fields only) - session_id is automatically provided
 - search_web(query): Search the internet
 
 At the beginning of every conversation, first use the fetch_patient_data tool to check for and load any existing patient data for this session. If no data exists or it's incomplete, politely greet the patient and start asking for their personal and medical information step by step in a natural, conversational way. 
@@ -105,7 +105,7 @@ For physical_examination, use a simple TEXT STRING, not a dictionary
 For test_results, use the correct structure: test_results=[{'test_name': 'Test Name', 'test_result_values': [{'parameterName': 'Parameter', 'parameterValue': 'Value', 'parameterUnit': 'Unit', 'parameterRefRange': 'Range'}]}]
 
 CORRECT example:
-save_patient_data(session_id='123', vitals={'bp_systolic': 110, 'bp_diastolic': 80}, family_history=['Hypertension (Mother)'], current_medications=['Levothyroxine 75mcg once daily'], allergies={'drug_allergies': ['Ibuprofen'], 'food_allergies': ['Shellfish']}, physical_examination='Mild tenderness in suprapubic region, no guarding')
+save_patient_data(vitals={'bp_systolic': 110, 'bp_diastolic': 80}, family_history=['Hypertension (Mother)'], current_medications=['Levothyroxine 75mcg once daily'], allergies={'drug_allergies': ['Ibuprofen'], 'food_allergies': ['Shellfish']}, physical_examination='Mild tenderness in suprapubic region, no guarding')
 
 WRONG examples to avoid:
 - physical_examination={'abdomen': 'findings'} (use physical_examination='Abdomen: findings')
@@ -149,7 +149,7 @@ class Session:
     context: List[Dict]
     model_name: str
     temperature: float = 0.3
-    max_tokens: int = 2048
+    max_tokens: int = 4096
     context_max_tokens: int = 128000
     is_active: bool = True
 
@@ -176,8 +176,6 @@ class MessageModel(Base):
     content = Column(Text)
     timestamp = Column(DateTime)
     message_type = Column(String)
-    msg_metadata = Column("metadata", Text)
-    audio_data = Column(LargeBinary)
 
 class ToolCallModel(Base):
     __tablename__ = 'tool_calls'
@@ -258,8 +256,6 @@ class DatabaseManager:
                 content=message.content,
                 timestamp=message.timestamp,
                 message_type=message.message_type,
-                metadata=metadata_str,
-                audio_data=message.audio_data
             )
             sess.add(model)
             sess.commit()
@@ -278,8 +274,6 @@ class DatabaseManager:
                     content=row.content,
                     timestamp=row.timestamp,
                     message_type=row.message_type,
-                    metadata=json.loads(row.msg_metadata) if row.msg_metadata else None,
-                    audio_data=row.audio_data
                 ))
             return list(reversed(messages))
 
@@ -756,7 +750,7 @@ class VoiceAIServer:
         
         return session
     
-    async def execute_tool_call(self, function_name: str, args: Dict, session_id: str) -> str:
+    async def execute_tool_call(self, function_name: str, args: Dict, session_id: str, message_id: str = None) -> str:
         """Execute a single tool call and return the result."""
         try:
             if function_name not in self.tool_functions:
@@ -790,6 +784,7 @@ class VoiceAIServer:
             # Log the tool call
             self.db.save_tool_call(
                 session_id=session_id,
+                message_id=message_id,
                 function_name=function_name,
                 arguments=json.dumps(args),
                 result=str(result)
@@ -804,6 +799,7 @@ class VoiceAIServer:
             
             self.db.save_tool_call(
                 session_id=session_id,
+                message_id=message_id,
                 function_name=function_name,
                 arguments=json.dumps(args),
                 result=error_msg
@@ -861,7 +857,7 @@ class VoiceAIServer:
                     args = self._parse_function_args(args_str, session.id)
                     
                     # Execute the tool call
-                    result = await self.execute_tool_call(function_name, args, session.id)
+                    result = await self.execute_tool_call(function_name, args, session.id, message.id)
                     tool_results.append(f"Tool call {raw_call} returned: {result}")
                 
                 # Add the assistant's response with tool calls to messages

@@ -100,15 +100,17 @@ For vitals, use individual fields: bp_systolic, bp_diastolic (NOT blood_pressure
 For family_history, use a list of strings: ['Hypertension (Mother)', 'Breast Cancer (Maternal Aunt)']
 For current_medications, use simple strings: ['Levothyroxine 75mcg once daily']
 For past_history, use the nested format with separate arrays: past_history={'past_illnesses': [{'illness': 'UTI', 'date': '05-09-2023'}], 'previous_procedures': [{'procedure': 'Cystoscopy', 'date': '10-10-2023'}]}
-For test_results, use: test_result_values array with parameterName, parameterValue, parameterUnit, parameterRefRange
+For allergies, use the nested format: allergies={'drug_allergies': ['Ibuprofen'], 'food_allergies': ['Shellfish']}
+For physical_examination, use a simple TEXT STRING, not a dictionary
+For test_results, use the correct structure: test_results=[{'test_name': 'Test Name', 'test_result_values': [{'parameterName': 'Parameter', 'parameterValue': 'Value', 'parameterUnit': 'Unit', 'parameterRefRange': 'Range'}]}]
 
 CORRECT example:
-save_patient_data(session_id='123', vitals={'bp_systolic': 110, 'bp_diastolic': 80}, family_history=['Hypertension (Mother)'], current_medications=['Levothyroxine 75mcg once daily'])
+save_patient_data(session_id='123', vitals={'bp_systolic': 110, 'bp_diastolic': 80}, family_history=['Hypertension (Mother)'], current_medications=['Levothyroxine 75mcg once daily'], allergies={'drug_allergies': ['Ibuprofen'], 'food_allergies': ['Shellfish']}, physical_examination='Mild tenderness in suprapubic region, no guarding')
 
 WRONG examples to avoid:
-- blood_pressure: '110/80 mmHg' (use bp_systolic: 110, bp_diastolic: 80)
-- family_history: {'mother': 'Hypertension'} (use family_history: ['Hypertension (Mother)'])
-- current_medications: [{'drug': 'X', 'dosage': 'Y'}] (use ['X Y'])
+- physical_examination={'abdomen': 'findings'} (use physical_examination='Abdomen: findings')
+- allergies={'drug': ['X'], 'food': ['Y']} (use allergies={'drug_allergies': ['X'], 'food_allergies': ['Y']})
+- test_results with 'parameters' key (use 'test_result_values' key)
 
 
 
@@ -545,7 +547,7 @@ class VoiceAIServer:
                     else:
                         raise ValueError(f"Unsupported node type: {type(node)}")
 
-                # Parse the arguments string manually
+                # Parse the arguments string manually with better handling of nested structures
                 result = {}
                 
                 # Split by commas, but respect nested structures
@@ -610,8 +612,24 @@ class VoiceAIServer:
                             result[key] = value
                         except Exception as parse_error:
                             logger.warning(f"Failed to parse value '{value_str}' for key '{key}': {parse_error}")
-                            # Fallback: treat as string
-                            result[key] = value_str.strip('"\'')
+                            # Fallback: treat as string, but handle common cases
+                            cleaned_value = value_str.strip('"\'')
+                            
+                            # Try to handle common list formats that might have failed
+                            if cleaned_value.startswith('[') and cleaned_value.endswith(']'):
+                                try:
+                                    # Simple list parsing for strings
+                                    list_content = cleaned_value[1:-1]
+                                    if list_content:
+                                        # Split by comma and clean up quotes
+                                        items = [item.strip().strip('"\'') for item in list_content.split(',')]
+                                        result[key] = items
+                                    else:
+                                        result[key] = []
+                                except:
+                                    result[key] = cleaned_value
+                            else:
+                                result[key] = cleaned_value
                 
                 return result
                 
@@ -620,10 +638,12 @@ class VoiceAIServer:
                 # Fallback to simpler parsing for basic cases
                 
                 if '=' in args_str:
-                    # Simple keyword arguments
+                    # Simple keyword arguments with improved nested structure handling
                     pairs = []
                     current_pair = ""
                     paren_count = 0
+                    bracket_count = 0
+                    brace_count = 0
                     quote_char = None
                     
                     for char in args_str:
@@ -640,7 +660,19 @@ class VoiceAIServer:
                         elif char == ')':
                             paren_count -= 1
                             current_pair += char
-                        elif char == ',' and paren_count == 0:
+                        elif char == '[':
+                            bracket_count += 1
+                            current_pair += char
+                        elif char == ']':
+                            bracket_count -= 1
+                            current_pair += char
+                        elif char == '{':
+                            brace_count += 1
+                            current_pair += char
+                        elif char == '}':
+                            brace_count -= 1
+                            current_pair += char
+                        elif char == ',' and paren_count == 0 and bracket_count == 0 and brace_count == 0:
                             pairs.append(current_pair.strip())
                             current_pair = ""
                         else:

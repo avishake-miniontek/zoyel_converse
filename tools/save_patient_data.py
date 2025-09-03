@@ -41,7 +41,7 @@ class PatientData(Base):
     spo2 = Column(Integer, default=0)
     lmp = Column(String, default="")  # Format: DD-MM-YYYY
     
-    # Clinical findings
+    # Clinical findings - FIXED: Changed to Text instead of JSON for physical_examination
     physical_examination = Column(Text, default="")
     
     # Medical history as JSON arrays
@@ -97,8 +97,8 @@ def save_patient_data(
     respiration_rate: int = 0,
     spo2: int = 0,
     lmp: str = "",
-    # Clinical findings
-    physical_examination: str = "",
+    # Clinical findings - FIXED: Changed to handle both string and dict
+    physical_examination: Any = "",
     comorbidities: List[str] = None,
     # Past history - can accept both formats
     past_history: Optional[Dict[str, List[Dict]]] = None,
@@ -130,7 +130,7 @@ def save_patient_data(
         complaints: List of complaint objects with symptom, severity, since
         vitals: Nested vitals object (optional)
         weight_kg, height_cm, etc.: Individual vital components
-        physical_examination: Physical examination findings
+        physical_examination: Physical examination findings (string or dict)
         comorbidities: List of comorbidities
         past_history: Nested past history object (optional)
         past_illnesses: List of past illnesses (strings or objects)
@@ -177,8 +177,26 @@ def save_patient_data(
 
         # Handle nested allergies structure
         if allergies:
-            drug_allergies = allergies.get("drug_allergies", drug_allergies)
-            food_allergies = allergies.get("food_allergies", food_allergies)
+            # FIXED: Handle both 'drug_allergies'/'food_allergies' and 'drug'/'food' keys
+            if "drug_allergies" in allergies:
+                drug_allergies = allergies.get("drug_allergies", drug_allergies)
+            elif "drug" in allergies:
+                drug_allergies = allergies.get("drug", drug_allergies)
+                
+            if "food_allergies" in allergies:
+                food_allergies = allergies.get("food_allergies", food_allergies)
+            elif "food" in allergies:
+                food_allergies = allergies.get("food", food_allergies)
+
+        # FIXED: Handle physical_examination - convert dict to string if needed
+        if isinstance(physical_examination, dict):
+            # Convert dict to readable string format
+            exam_parts = []
+            for key, value in physical_examination.items():
+                exam_parts.append(f"{key.title()}: {value}")
+            physical_examination = "; ".join(exam_parts)
+        elif not isinstance(physical_examination, str):
+            physical_examination = str(physical_examination)
 
         # Initialize empty lists if None
         if complaints is None:
@@ -216,6 +234,28 @@ def save_patient_data(
                 normalized_previous_procedures.append({"procedure": procedure, "date": ""})
             elif isinstance(procedure, dict):
                 normalized_previous_procedures.append(procedure)
+
+        # FIXED: Handle test_results - ensure proper structure
+        normalized_test_results = []
+        if test_results:
+            for test in test_results:
+                if isinstance(test, dict):
+                    # Handle both 'parameters' and 'test_result_values' keys
+                    if "parameters" in test:
+                        # Convert 'parameters' to 'test_result_values' for consistency
+                        normalized_test = {
+                            "test_name": test.get("test_name", ""),
+                            "test_result_values": test["parameters"]
+                        }
+                    elif "test_result_values" in test:
+                        normalized_test = test
+                    else:
+                        # Default structure
+                        normalized_test = {
+                            "test_name": test.get("test_name", ""),
+                            "test_result_values": []
+                        }
+                    normalized_test_results.append(normalized_test)
 
         db = SessionLocal()
         try:
@@ -288,8 +328,8 @@ def save_patient_data(
                     existing_patient.food_allergies = food_allergies
                 if test_documents:
                     existing_patient.test_documents = test_documents
-                if test_results:
-                    existing_patient.test_results = test_results
+                if normalized_test_results:
+                    existing_patient.test_results = normalized_test_results
                 
                 existing_patient.updated_at = datetime.utcnow()
                 logger.info(f"Updated patient data for session: {session_id}")
@@ -315,7 +355,7 @@ def save_patient_data(
                     respiration_rate=respiration_rate,
                     spo2=spo2,
                     lmp=lmp,
-                    physical_examination=physical_examination,
+                    physical_examination=physical_examination,  # Now properly handled as string
                     comorbidities=comorbidities,
                     past_illnesses=normalized_past_illnesses,
                     previous_procedures=normalized_previous_procedures,
@@ -324,7 +364,7 @@ def save_patient_data(
                     drug_allergies=drug_allergies,
                     food_allergies=food_allergies,
                     test_documents=test_documents,
-                    test_results=test_results,
+                    test_results=normalized_test_results,  # Now properly structured
                 )
 
                 db.add(new_patient)
@@ -420,7 +460,7 @@ def save_patient_data_schema():
                     # Clinical findings
                     "physical_examination": {
                         "type": "string",
-                        "description": "Physical examination findings",
+                        "description": "Physical examination findings as text",
                     },
                     
                     # Medical history

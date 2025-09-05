@@ -64,8 +64,8 @@ class PatientData(Base):
     test_results = Column(JSON, default=list)  # List of test result objects
     
     # Metadata
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 # Create database engine and session
 engine = create_engine("sqlite:///voice_ai.db")
@@ -331,7 +331,7 @@ def save_patient_data(
                 if normalized_test_results:
                     existing_patient.test_results = normalized_test_results
                 
-                existing_patient.updated_at = datetime.utcnow()
+                existing_patient.updated_at = datetime.now()
                 logger.info(f"Updated patient data for session: {session_id}")
 
             else:

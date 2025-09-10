@@ -494,7 +494,7 @@ class VoiceAIClientGUI:
         # Send text button
         self.send_text_button = ttk.Button(
             audio_frame,
-            text="Send Text",
+            text="💬 Send Text",
             command=self.send_text_message,
             style='Dark.TButton'
         )
@@ -513,7 +513,7 @@ class VoiceAIClientGUI:
         # Clear history button
         self.clear_button = ttk.Button(
             audio_frame,
-            text="Clear History",
+            text="🧹 Clear History",
             command=self.clear_history,
             style='Dark.TButton'
         )

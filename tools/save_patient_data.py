@@ -81,6 +81,8 @@ def save_patient_data(
     age_days: int = 0,
     # Basic info
     gender: str = "",
+    # Location can be passed as nested dict or individual values
+    location: Optional[Dict[str, str]] = None,
     city: str = "",
     country: str = "",
     date: str = None,
@@ -157,6 +159,11 @@ def save_patient_data(
             age_years = age.get("years", age_years)
             age_months = age.get("months", age_months)
             age_days = age.get("days", age_days)
+        
+        # Handle nested location structure
+        if location:
+            city = location.get("city", city)
+            country = location.get("country", country)
 
         # Handle nested vitals structure
         if vitals:

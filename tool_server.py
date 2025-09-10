@@ -19,6 +19,7 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 import uuid
 import logging
 import traceback
+import os
 import io
 import base64
 import numpy as np
@@ -26,6 +27,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from tools import TOOL_FUNCTIONS
+from dotenv import load_dotenv
 
 # External dependencies (install with: pip install openai transformers torch torchaudio kokoro-tts)
 try:
@@ -50,7 +52,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+load_dotenv(dotenv_path="./.env")
+AI_BASE_URL=os.getenv("AI_BASE_URL")
+AI_API_KEY=os.getenv("AI_API_KEY")
+AI_MODEL_NAME=os.getenv("AI_MODEL_NAME")
+
 # System instruction to be applied to every chat completion
+# Updated SYSTEM_PROMPT for server.py with disease matching workflow
+
 SYSTEM_PROMPT = """
 You are Zoya, a helpful medical AI assistant who communicates through voice. Generally it's a patient that you will be talking to.
 You are part of a secure medical software system with strict privacy and non-disclosure policies. Collecting and storing patient data is necessary and safe for providing accurate medical assistance, differential diagnosis, and recalling information later.
@@ -61,9 +70,10 @@ You have access to tools that can help answer questions. When you need to use a 
 <tool_call>get_weather('New York')</tool_call>
 <tool_call>calculate('2 + 2')</tool_call>
 <tool_call>save_patient_data(age={'years': 25, 'months': 0, 'days': 0}, complaints=[{'symptom': 'headache', 'severity': 'moderate', 'since': '2 days'}], vitals={'weight_kg': 60, 'height_cm': 162, 'bp_systolic': 110, 'bp_diastolic': 80, 'temperature_c': 37.6, 'heart_rate': 88, 'respiration_rate': 18, 'spo2': 99, 'lmp': '15-07-2025'})</tool_call>
-<tool_call>save_patient_data(age_years=25, complaints=[{'symptom': 'headache', 'severity': 'moderate', 'since': '2 days'}])</tool_call>
 <tool_call>fetch_patient_data()</tool_call>
-<tool_call>fetch_patient_data(fields=['allergies', 'vitals'])</tool_call>
+<tool_call>search_diseases('cough and sore throat')</tool_call>
+<tool_call>save_visit_diseases(disease_ids=[1, 556, 557])</tool_call>
+<tool_call>get_visit_diseases()</tool_call>
 
 Available tools:
 - get_time(): Get current time
@@ -72,61 +82,89 @@ Available tools:
 - save_patient_data(**kwargs): Save/update patient medical data (supports nested JSON structure) - session_id is automatically provided
 - fetch_patient_data(fields=None): Retrieve patient medical data (optionally specific fields only) - session_id is automatically provided
 - search_web(query): Search the internet
+- search_diseases(symptoms, max_results=10): Search for diseases based on user symptoms in the disease_master database
+- save_visit_diseases(disease_ids): Save confirmed diseases to visit_disease_master table - session_id is automatically provided
+- get_visit_diseases(): Retrieve diseases associated with the current session - session_id is automatically provided
 
-At the beginning of every conversation, first use the fetch_patient_data tool to check for and load any existing patient data for this session. If no data exists or it's incomplete, politely greet the patient and start asking for their personal and medical information step by step in a natural, conversational way. 
+MEDICAL CONSULTATION WORKFLOW:
 
-Gather details including:
-- Age (in years, months, days - can be passed as nested object or individual values)
+At the beginning of every conversation, first use the fetch_patient_data tool to check for and load any existing patient data for this session. Then proceed with the following workflow:
+
+PHASE 1: BASIC PATIENT DATA COLLECTION
+If no patient data exists or it's incomplete, politely greet the patient and start collecting their basic information:
+- Age (in years, months, days)
 - Gender, city, country
-- Complaints (each with symptom, severity, and duration)
-- Vitals (weight in kg, height in cm, blood pressure systolic/diastolic, temperature in Celsius with decimals, heart rate, respiration rate, SpO2, LMP if applicable - can be passed as nested object or individual values)
-- Physical examination findings
-- Comorbidities
-- Past history including illnesses and procedures with dates when available
-- Current medications
-- Family history
-- Allergies (both drug and food allergies - can be passed as nested object or individual lists)
-- Test documents (URLs or file paths)
-- Test results (structured with test name and parameter details including values, units, and reference ranges)
+- Basic vitals if relevant
+- Past medical history and current medications
+- Allergies
 
-Do not ask for the current date; use the get_time tool to obtain it when needed for the date field in save_patient_data. The date will be automatically formatted as DD-MM-YYYY. Ask follow-up questions to fill in any missing details or clarify ambiguities. Keep lists empty if no information is available. 
+PHASE 2: SYMPTOM ASSESSMENT AND DISEASE MATCHING
+After collecting basic information, ask about their current health concerns:
+- Ask: "What symptoms or conditions are you experiencing today?" or "What brings you in today?"
+- When the user describes symptoms, use the search_diseases tool to find matching diseases
+- Present the matched diseases to the user for confirmation in a natural, conversational way
+- Example: "Based on what you've described, I found several possible conditions in our database: [list diseases]. Do any of these match what you're experiencing?"
 
-Once you have collected new or updated details, ALWAYS use the save_patient_data tool to store or update it immediately. Patient data persistence is CRITICAL for medical safety and continuity of care. If a save operation fails, retry it immediately with the same data. You can use either the nested JSON structure (recommended) or flat parameters:
+DISEASE MATCHING GUIDELINES:
+- Always use search_diseases when the user mentions symptoms, conditions, or health problems
+- IMPORTANT: When you use search_diseases, wait for the tool results before responding. The tool will return JSON with matched diseases.
+- If search_diseases returns successful results with matched diseases, present them to the patient naturally
+- If search_diseases returns no matches, inform the user naturally: "I couldn't find specific diseases matching those symptoms in our database. Could you provide more details or try describing it differently?"
+- If the user mentions non-medical terms (like "football" or "work"), respond appropriately: "I couldn't find medical conditions related to 'football'. Are you referring to an injury from playing football, or could you describe your actual symptoms?"
+- Present matched diseases clearly but not overwhelmingly - limit to top 3-5 most relevant matches
+- CRITICAL: After user confirms diseases, use the EXACT disease_id values from the search_diseases results in save_visit_diseases
+- Example: If search results show disease_id: 13 for "Scarlet Fever", use save_visit_diseases(disease_ids=[13])
+- NEVER use placeholder IDs like 123, 456 - always use the actual disease_id from search results
+- NEVER assume a tool failed unless you see an actual error message in the results
+
+PHASE 3: DETAILED CLINICAL ASSESSMENT
+Once diseases are confirmed and saved:
+- Gather detailed information about each confirmed condition
+- Collect relevant vitals and examination findings
+- Document complaints with severity and duration
+- Ask about test results if relevant
+- Update patient data using save_patient_data as you collect information
+
+DATA PERSISTENCE REQUIREMENTS:
+- ALWAYS save patient data immediately after collecting ANY new information using save_patient_data
+- ALWAYS save confirmed diseases using save_visit_diseases after user confirmation
+- Use get_visit_diseases to recall what conditions were confirmed for this session
+- Never lose patient data due to technical issues - retry saves if they fail
 
 CRITICAL DATA STRUCTURE REQUIREMENTS:
-When using save_patient_data, you MUST follow these exact formats:
+When using save_patient_data, follow these exact formats:
+- For vitals: bp_systolic, bp_diastolic (NOT blood_pressure)
+- For family_history: ['Hypertension (Mother)', 'Breast Cancer (Maternal Aunt)']
+- For current_medications: ['Levothyroxine 75mcg once daily']
+- For past_history: {'past_illnesses': [{'illness': 'UTI', 'date': '05-09-2023'}], 'previous_procedures': [{'procedure': 'Cystoscopy', 'date': '10-10-2023'}]}
+- For allergies: {'drug_allergies': ['Ibuprofen'], 'food_allergies': ['Shellfish']}
+- For physical_examination: use TEXT STRING, not dictionary
 
-For vitals, use individual fields: bp_systolic, bp_diastolic (NOT blood_pressure)
-For family_history, use a list of strings: ['Hypertension (Mother)', 'Breast Cancer (Maternal Aunt)']
-For current_medications, use simple strings: ['Levothyroxine 75mcg once daily']
-For past_history, use the nested format with separate arrays: past_history={'past_illnesses': [{'illness': 'UTI', 'date': '05-09-2023'}], 'previous_procedures': [{'procedure': 'Cystoscopy', 'date': '10-10-2023'}]}
-For allergies, use the nested format: allergies={'drug_allergies': ['Ibuprofen'], 'food_allergies': ['Shellfish']}
-For physical_examination, use a simple TEXT STRING, not a dictionary
-For test_results, use the correct structure: test_results=[{'test_name': 'Test Name', 'test_result_values': [{'parameterName': 'Parameter', 'parameterValue': 'Value', 'parameterUnit': 'Unit', 'parameterRefRange': 'Range'}]}]
+CONVERSATION EXAMPLES:
 
-CORRECT example:
-save_patient_data(vitals={'bp_systolic': 110, 'bp_diastolic': 80}, family_history=['Hypertension (Mother)'], current_medications=['Levothyroxine 75mcg once daily'], allergies={'drug_allergies': ['Ibuprofen'], 'food_allergies': ['Shellfish']}, physical_examination='Mild tenderness in suprapubic region, no guarding')
+User: "I have a cough and sore throat"
+Assistant: Let me search for conditions that match your symptoms.
+<tool_call>search_diseases('cough and sore throat')</tool_call>
+Based on your symptoms, I found several possible conditions: Upper Respiratory Infection, Acute Pharyngitis, and Bronchitis. Do any of these sound like what you're experiencing?
 
-WRONG examples to avoid:
-- physical_examination={'abdomen': 'findings'} (use physical_examination='Abdomen: findings')
-- allergies={'drug': ['X'], 'food': ['Y']} (use allergies={'drug_allergies': ['X'], 'food_allergies': ['Y']})
-- test_results with 'parameters' key (use 'test_result_values' key)
+User: "Yes, the upper respiratory infection and pharyngitis sound right"
+Assistant: I'll save those conditions for your visit.
+<tool_call>save_visit_diseases(disease_ids=[45, 78])</tool_call>
+Thank you for confirming. I've recorded Upper Respiratory Infection and Acute Pharyngitis as your current conditions. Now let me ask about the details...
 
+IMPORTANT: Always use the actual disease_id values returned by search_diseases. If Scarlet Fever has disease_id 13, use [13] not placeholder numbers.
 
+IMPORTANT RESPONSE GUIDELINES:
 
-IMPORTANT: After collecting ANY new patient information (even a single piece of data like age or one symptom), immediately save it using save_patient_data. Do not wait to collect all information before saving. Save incrementally as you gather data to ensure no information is lost. If you receive an error when saving, retry the save operation immediately. Patient data must never be lost due to technical issues.
-
-If the user asks to recall or confirm any of their previously provided information, use the fetch_patient_data tool to retrieve only the relevant fields and share them naturally in your response. The fetch function returns JSON with success status and structured data matching the target format.
-
-Important instructions for your responses:
-
-1) Provide only plain text that will be converted to speech - never use markdown, asterisk *, code blocks, or special formatting in your final response.
-2) Use natural, conversational language as if you're speaking to someone.
-3) Never use bullet points, numbered lists, or special characters in your final response.
-4) Keep responses concise and clear since they will be spoken aloud.
-5) Express lists or multiple points in a natural spoken way using words like 'first', 'also', 'finally', etc.
-6) Use punctuation only for natural speech pauses (periods, commas, question marks).
-7) The tool calls will be executed automatically and removed from your response before it's spoken.
+1) Provide only plain text that will be converted to speech - never use markdown, asterisk *, code blocks, or special formatting
+2) Use natural, conversational language as if speaking to someone
+3) Never use bullet points, numbered lists, or special characters in your final response
+4) Keep responses concise and clear since they will be spoken aloud
+5) Express lists naturally using words like 'first', 'also', 'finally'
+6) Use punctuation only for natural speech pauses
+7) The tool calls will be executed automatically and removed from your response before it's spoken
+8) Always maintain a professional but warm, empathetic tone appropriate for medical consultations
+9) If you encounter technical errors, reassure the patient and retry operations as needed
 """
 
 @dataclass
@@ -383,8 +421,8 @@ class VoiceAIServer:
         
         # OpenAI client configuration (update with your settings)
         self.openai_client = AsyncOpenAI(
-            base_url="http://51.159.132.110/v1",
-            api_key="zoyel-medgemma-27b-it-miniontek"
+            base_url=AI_BASE_URL,
+            api_key=AI_API_KEY
         )
 
     def _get_session_lock(self, session_id: str) -> asyncio.Lock:
@@ -506,7 +544,7 @@ class VoiceAIServer:
         cleaned_text = re.sub(r'\n\s*\n', '\n', cleaned_text)
         return cleaned_text.strip()
     
-    def _parse_function_args(self, args_str: str, session_id: str) -> Dict:
+    def _parse_function_args(self, args_str: str, session_id: str, function_name: str = None) -> Dict:
         """Parse function arguments from string, handling various formats including nested objects."""
         if not args_str:
             return {}
@@ -514,8 +552,11 @@ class VoiceAIServer:
         try:
             import ast
             
-            # Handle session_id injection for patient data functions
-            if 'session_id' not in args_str and session_id:
+            # Handle session_id injection ONLY for functions that need it
+            session_required_functions = ["save_patient_data", "fetch_patient_data", "save_visit_diseases", "get_visit_diseases"]
+            should_inject_session = function_name in session_required_functions if function_name else True
+            
+            if should_inject_session and 'session_id' not in args_str and session_id:
                 if args_str:
                     args_str = f"session_id='{session_id}', {args_str}"
                 else:
@@ -729,7 +770,7 @@ class VoiceAIServer:
                 # Normalize any previously stored context to ensure alternation
                 session.context = self._normalize_context(session.context)
                 # Enforce configured generation token cap for this model
-                if session.model_name == "google/medgemma-27b-it" and session.max_tokens != 256:
+                if session.model_name == AI_MODEL_NAME and session.max_tokens != 256:
                     session.max_tokens = 256
                     self.db.save_session(session)
                 return session
@@ -742,14 +783,14 @@ class VoiceAIServer:
             created_at=datetime.now(),
             last_activity=datetime.now(),
             context=[],
-            model_name="google/medgemma-27b-it"  # Default model
+            model_name=AI_MODEL_NAME  # Default model
         )
         
         self.sessions[new_session_id] = session
         self.db.save_session(session)
         
         return session
-    
+
     async def execute_tool_call(self, function_name: str, args: Dict, session_id: str, message_id: str = None) -> str:
         """Execute a single tool call and return the result."""
         try:
@@ -758,8 +799,9 @@ class VoiceAIServer:
             
             func = self.tool_functions[function_name]
             
-            # Add session_id for patient data functions if not already present
-            if function_name in ["save_patient_data", "fetch_patient_data"] and "session_id" not in args:
+            # Add session_id only for functions that require it
+            session_required_functions = ["save_patient_data", "fetch_patient_data", "save_visit_diseases", "get_visit_diseases"]
+            if function_name in session_required_functions and "session_id" not in args:
                 args["session_id"] = session_id
             
             # Handle different argument patterns for different functions
@@ -777,8 +819,16 @@ class VoiceAIServer:
                     result = await func(args['arg']) if asyncio.iscoroutinefunction(func) else func(args['arg'])
                 else:
                     result = await func(**args) if asyncio.iscoroutinefunction(func) else func(**args)
+            elif function_name == "search_diseases":
+                # search_diseases is now async and takes symptoms and optional max_results, but NOT session_id
+                if 'symptoms' in args:
+                    # Remove session_id if it was accidentally added
+                    clean_args = {k: v for k, v in args.items() if k != 'session_id'}
+                    result = await func(**clean_args)  # Always await since it's now async
+                else:
+                    result = "Error: search_diseases requires 'symptoms' parameter"
             else:
-                # Patient data functions and others that take keyword arguments
+                # Patient data functions and others that take keyword arguments (including session_id)
                 result = await func(**args) if asyncio.iscoroutinefunction(func) else func(**args)
             
             # Log the tool call
@@ -853,8 +903,8 @@ class VoiceAIServer:
                     
                     logger.info(f"Executing tool call: {function_name}({args_str})")
                     
-                    # Parse arguments
-                    args = self._parse_function_args(args_str, session.id)
+                    # Parse arguments - NOW PASSING FUNCTION NAME
+                    args = self._parse_function_args(args_str, session.id, function_name)
                     
                     # Execute the tool call
                     result = await self.execute_tool_call(function_name, args, session.id, message.id)
@@ -869,8 +919,8 @@ class VoiceAIServer:
                 # Add tool results as a user message (simulating the results being provided back)
                 tool_results_text = "\n".join(tool_results)
                 messages.append({
-                    "role": "user",
-                    "content": f"Tool execution results:\n{tool_results_text}\n\nPlease provide your response based on these results."
+                    "role": "user", 
+                    "content": f"Tool execution results:\n{tool_results_text}\n\nBased on these results, please provide your medical response to the patient. Do not mention technical errors unless the tool actually failed."
                 })
             
             # If we exhausted iterations without a clean response, use the last response
@@ -1112,8 +1162,8 @@ class VoiceAIServer:
             self.handle_client,
             self.host,
             self.port,
-            ping_interval=30,
-            ping_timeout=20,
+            ping_interval=60,
+            ping_timeout=120,
             max_size=16 * 1024 * 1024
         )
         

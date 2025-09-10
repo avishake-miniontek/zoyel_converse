@@ -242,9 +242,9 @@ class WebSocketClient:
                 
                 async with websockets.connect(
                     self.server_url,
-                    ping_interval=30,
-                    ping_timeout=20,
-                    close_timeout=20,
+                    ping_interval=60,
+                    ping_timeout=120,
+                    close_timeout=30,
                     max_size=16 * 1024 * 1024
                 ) as websocket:
                     self.websocket = websocket

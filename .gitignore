@@ -1,2 +1,13 @@
 .venv/
 prompts/
+__pycache__
+tools/__pycache__
+
+# Environment File
+.env
+
+# Voice AI Database
+voice_ai.db
+
+# Logs
+voice_server.log

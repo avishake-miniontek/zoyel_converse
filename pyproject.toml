@@ -20,6 +20,7 @@ dependencies = [
     "pathlib>=1.0.1",
     "psycopg2-binary>=2.9.10",
     "pyaudio>=0.2.14",
+    "python-dotenv>=1.1.1",
     "simpleaudio>=1.0.4",
     "sqlalchemy>=2.0.43",
     "torch>=2.8.0",

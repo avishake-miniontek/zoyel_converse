@@ -56,6 +56,8 @@ class AudioManager:
         self.audio = pyaudio.PyAudio()
         self.is_recording = False
         self.is_playing = False
+        self.should_stop_playback = False
+        self.playback_stream = None
         self.recording_data = []
         self.sample_rate = 16000
         self.channels = 1
@@ -138,15 +140,18 @@ class AudioManager:
         return b""
     
     def play_audio(self, wav_data: bytes):
-        """Play audio data using PyAudio"""
+        """Play audio data using PyAudio with skip support"""
         if not wav_data or self.output_device_index is None:
             return
         
         def play_thread():
             try:
                 logger.info("Starting audio playback")
+                self.is_playing = True
+                self.should_stop_playback = False
+                
                 wf = wave.open(io.BytesIO(wav_data), 'rb')
-                stream = self.audio.open(
+                self.playback_stream = self.audio.open(
                     format=self.audio.get_format_from_width(wf.getsampwidth()),
                     channels=wf.getnchannels(),
                     rate=wf.getframerate(),
@@ -155,16 +160,34 @@ class AudioManager:
                 )
                 
                 data = wf.readframes(self.chunk_size)
-                while data:
-                    stream.write(data)
+                while data and not self.should_stop_playback:
+                    self.playback_stream.write(data)
                     data = wf.readframes(self.chunk_size)
                 
-                stream.stop_stream()
-                stream.close()
+                self.playback_stream.stop_stream()
+                self.playback_stream.close()
+                self.playback_stream = None
                 wf.close()
-                logger.info("Playback finished")
+                
+                if self.should_stop_playback:
+                    logger.info("Playback interrupted by skip")
+                else:
+                    logger.info("Playback finished")
+                    
+                self.is_playing = False
+                self.should_stop_playback = False
+                
             except Exception as e:
                 logger.error(f"Playback error: {e}")
+                self.is_playing = False
+                self.should_stop_playback = False
+                if self.playback_stream:
+                    try:
+                        self.playback_stream.stop_stream()
+                        self.playback_stream.close()
+                    except:
+                        pass
+                    self.playback_stream = None
         
         # Start playback in a daemon thread (GUI mainloop keeps app alive)
         threading.Thread(target=play_thread, daemon=True).start()
@@ -181,10 +204,16 @@ class AudioManager:
         
         return wav_buffer.getvalue()
     
+    def stop_playback(self):
+        """Stop current audio playback"""
+        if self.is_playing:
+            self.should_stop_playback = True
+            logger.info("Audio playback stop requested")
+    
     def cleanup(self):
         """Clean up audio resources"""
         self.is_recording = False
-        self.is_playing = False
+        self.stop_playback()
         if hasattr(self, 'recording_thread'):
             self.recording_thread.join(timeout=1.0)
         self.audio.terminate()
@@ -388,6 +417,8 @@ class VoiceAIClientGUI:
         style.map('Success.TButton', background=[('active', '#34ce57')])
         style.configure('Danger.TButton', background='#dc3545', foreground='#ffffff')
         style.map('Danger.TButton', background=[('active', '#e4606d')])
+        style.configure('Warning.TButton', background='#ffc107', foreground='#000000')
+        style.map('Warning.TButton', background=[('active', '#ffcd39')])
     
     def create_widgets(self):
         """Create main GUI widgets"""
@@ -468,6 +499,16 @@ class VoiceAIClientGUI:
             style='Dark.TButton'
         )
         self.send_text_button.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Skip button
+        self.skip_button = ttk.Button(
+            audio_frame,
+            text="⏭️ Skip",
+            command=self.skip_audio,
+            style='Danger.TButton',
+            state='disabled'
+        )
+        self.skip_button.pack(side=tk.LEFT, padx=(0, 10))
         
         # Clear history button
         self.clear_button = ttk.Button(
@@ -737,10 +778,14 @@ class VoiceAIClientGUI:
                 if audio_b64:
                     try:
                         audio_data = base64.b64decode(audio_b64)
+                        self.root.after(0, lambda: self.skip_button.config(state='normal'))
                         self.audio_manager.play_audio(audio_data)
                         self.root.after(0, lambda: self.add_message("assistant", "[Voice Response Playing]", message_type="audio"))
+                        # Schedule to disable skip button after a delay (when audio likely finishes)
+                        self.root.after(5000, lambda: self.skip_button.config(state='disabled') if not self.audio_manager.is_playing else None)
                     except Exception as e:
                         logger.error(f"Audio playback error: {e}")
+                        self.root.after(0, lambda: self.skip_button.config(state='disabled'))
             
             elif message_type == "history":
                 messages = message_data.get("messages", [])
@@ -811,6 +856,25 @@ class VoiceAIClientGUI:
             )
         
         self.info_label.config(text="Conversation history loaded.")
+    
+    def skip_audio(self):
+        """Skip currently playing audio and halt server generation"""
+        if not self.connection_status:
+            return
+        
+        # Stop client-side audio playback
+        if self.audio_manager.is_playing:
+            self.audio_manager.stop_playback()
+            self.add_message("system", "Audio playback skipped")
+        
+        # Send skip message to server to halt generation
+        self.websocket_client.send_message({
+            "type": "skip_generation"
+        })
+        
+        # Disable skip button
+        self.skip_button.config(state='disabled')
+        self.info_label.config(text="Generation skipped. Ready for new input.")
     
     def clear_history(self):
         """Clear chat history"""

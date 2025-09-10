@@ -418,6 +418,8 @@ class VoiceAIServer:
         self.connected_clients: Dict[str, websockets.WebSocketServerProtocol] = {}
         # Per-session locks to serialize processing and avoid role alternation errors
         self.session_locks: Dict[str, asyncio.Lock] = {}
+        # Per-session generation cancellation flags
+        self.generation_cancelled: Dict[str, bool] = {}
         
         # OpenAI client configuration (update with your settings)
         self.openai_client = AsyncOpenAI(
@@ -432,6 +434,16 @@ class VoiceAIServer:
             lock = asyncio.Lock()
             self.session_locks[session_id] = lock
         return lock
+    
+    def _set_generation_cancelled(self, session_id: str, cancelled: bool = True):
+        """Set generation cancellation flag for a session"""
+        self.generation_cancelled[session_id] = cancelled
+        if cancelled:
+            logger.info(f"Generation cancelled for session {session_id}")
+    
+    def _is_generation_cancelled(self, session_id: str) -> bool:
+        """Check if generation is cancelled for a session"""
+        return self.generation_cancelled.get(session_id, False)
 
     def _normalize_context(self, context: List[Dict]) -> List[Dict]:
         """Normalize context to strictly alternate roles (user <-> assistant),
@@ -860,6 +872,9 @@ class VoiceAIServer:
     async def process_message(self, session: Session, message: Message) -> Optional[Message]:
         """Process user message and generate AI response with manual tool call handling."""
         try:
+            # Clear any previous cancellation flag
+            self._set_generation_cancelled(session.id, False)
+            
             # Add user message to context
             session.context.append({
                 "role": "user",
@@ -873,6 +888,11 @@ class VoiceAIServer:
             iteration_count = 0
             
             while iteration_count < max_iterations:
+                # Check for cancellation before each iteration
+                if self._is_generation_cancelled(session.id):
+                    logger.info(f"Generation cancelled for session {session.id}, stopping processing")
+                    return None
+                
                 iteration_count += 1
                 
                 # Make the API call (without function calling - just regular completion)
@@ -882,6 +902,11 @@ class VoiceAIServer:
                     temperature=session.temperature,
                     max_tokens=session.max_tokens,
                 )
+                
+                # Check for cancellation after API call
+                if self._is_generation_cancelled(session.id):
+                    logger.info(f"Generation cancelled for session {session.id}, stopping after API call")
+                    return None
                 
                 ai_response = response.choices[0].message.content or ""
                 
@@ -897,6 +922,11 @@ class VoiceAIServer:
                 # Execute tool calls
                 tool_results = []
                 for tool_call in tool_calls:
+                    # Check for cancellation before each tool call
+                    if self._is_generation_cancelled(session.id):
+                        logger.info(f"Generation cancelled for session {session.id}, stopping tool execution")
+                        return None
+                    
                     function_name = tool_call['function_name']
                     args_str = tool_call['arguments_str']
                     raw_call = tool_call['raw_call']
@@ -922,6 +952,11 @@ class VoiceAIServer:
                     "role": "user", 
                     "content": f"Tool execution results:\n{tool_results_text}\n\nBased on these results, please provide your medical response to the patient. Do not mention technical errors unless the tool actually failed."
                 })
+            
+            # Final check for cancellation
+            if self._is_generation_cancelled(session.id):
+                logger.info(f"Generation cancelled for session {session.id}, not returning response")
+                return None
             
             # If we exhausted iterations without a clean response, use the last response
             if iteration_count >= max_iterations:
@@ -994,10 +1029,10 @@ class VoiceAIServer:
                             "message_id": ai_response.id
                         }))
                         
-                        # Generate and send audio response (only if content is not empty)
-                        if ai_response.content.strip():
+                        # Generate and send audio response (only if content is not empty and not cancelled)
+                        if ai_response.content.strip() and not self._is_generation_cancelled(session.id):
                             audio_data = await self.voice_processor.text_to_speech(ai_response.content)
-                            if audio_data:
+                            if audio_data and not self._is_generation_cancelled(session.id):
                                 audio_b64 = base64.b64encode(audio_data).decode('utf-8')
                                 await websocket.send(json.dumps({
                                     "type": "audio_response",
@@ -1048,10 +1083,10 @@ class VoiceAIServer:
                                 "message_id": ai_response.id
                             }))
                             
-                            # Generate and send audio response (only if content is not empty)
-                            if ai_response.content.strip():
+                            # Generate and send audio response (only if content is not empty and not cancelled)
+                            if ai_response.content.strip() and not self._is_generation_cancelled(session.id):
                                 audio_data = await self.voice_processor.text_to_speech(ai_response.content)
-                                if audio_data:
+                                if audio_data and not self._is_generation_cancelled(session.id):
                                     audio_b64 = base64.b64encode(audio_data).decode('utf-8')
                                     await websocket.send(json.dumps({
                                         "type": "audio_response",
@@ -1059,6 +1094,17 @@ class VoiceAIServer:
                                         "session_id": session.id,
                                         "message_id": ai_response.id
                                     }))
+                
+                elif message_type == "skip_generation":
+                    # Handle skip generation request
+                    self._set_generation_cancelled(session.id, True)
+                    logger.info(f"Skip generation requested for session {session.id}")
+                    
+                    # Send acknowledgment back to client
+                    await websocket.send(json.dumps({
+                        "type": "generation_skipped",
+                        "session_id": session.id
+                    }))
                 
                 elif message_type == "get_history":
                     # Send conversation history

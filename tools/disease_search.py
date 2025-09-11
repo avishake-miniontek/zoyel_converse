@@ -3,9 +3,13 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 import json
 import logging
-from openai import AsyncOpenAI
+import pickle
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
 import os
 import re
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,35 +20,253 @@ logger = logging.getLogger(__name__)
 engine = create_engine("sqlite:///voice_ai.db")
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Initialize OpenAI client for medgemma model
-try:
-    openai_client = AsyncOpenAI(
-        base_url=os.getenv("AI_BASE_URL"),
-        api_key=os.getenv("AI_API_KEY")
-    )
-    logger.info("MedGemma OpenAI client initialized successfully")
-except Exception as e:
-    logger.error(f"Failed to initialize OpenAI client: {e}")
-    openai_client = None
+# Initialize EmbeddingGemma model for native Gemma3 embeddings
+embedding_model = None
+disease_embeddings_cache = None
+disease_data_cache = None
+cache_dir = Path("embeddings_cache")
+cache_dir.mkdir(exist_ok=True)
 
-async def search_diseases(symptoms: Union[str, List[str]], max_results: int = 10) -> str:
+# Medical terms for relevance filtering
+MEDICAL_TERMS = {
+    'symptoms': {'pain', 'ache', 'fever', 'cough', 'rash', 'nausea', 'vomiting', 'diarrhea', 
+                'headache', 'fatigue', 'weakness', 'swelling', 'inflammation', 'bleeding',
+                'shortness', 'breathing', 'chest', 'stomach', 'abdominal', 'joint', 'muscle',
+                'throat', 'sore', 'itchy', 'burning', 'tingling', 'numbness', 'dizzy',
+                'blurred', 'vision', 'hearing', 'loss', 'discharge', 'spots', 'bumps', 'cramps',
+                'bloating', 'constipated', 'tightness', 'tired', 'red', 'flaky', 'cracks'},
+    'body_parts': {'head', 'neck', 'chest', 'back', 'arm', 'leg', 'hand', 'foot', 'eye',
+                  'ear', 'nose', 'mouth', 'throat', 'stomach', 'abdomen', 'knee', 'elbow',
+                  'shoulder', 'hip', 'ankle', 'wrist', 'finger', 'toe', 'skin', 'hair', 'elbows', 'knees'},
+    'medical_conditions': {'infection', 'disease', 'syndrome', 'disorder', 'condition',
+                          'illness', 'sickness', 'allergy', 'inflammation', 'cancer',
+                          'tumor', 'diabetes', 'hypertension', 'asthma', 'pneumonia'}
+}
+
+def _initialize_embedding_model():
+    """Initialize EmbeddingGemma model for native Gemma3 embeddings"""
+    global embedding_model
+    if embedding_model is None:
+        try:
+            logger.info("Loading EmbeddingGemma model (native Gemma3 embeddings)...")
+            embedding_model = SentenceTransformer('google/embeddinggemma-300m')
+            logger.info("EmbeddingGemma model loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load EmbeddingGemma model: {e}")
+            # Fallback to general model
+            try:
+                logger.info("Falling back to general sentence transformer model...")
+                embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                logger.info("Fallback model loaded successfully")
+            except Exception as fallback_error:
+                logger.error(f"Failed to load fallback model: {fallback_error}")
+                raise
+    return embedding_model
+
+async def search_diseases(symptoms: str, max_results: int = 10) -> str:
     """
-    Search for diseases in the disease_master table based on user-provided symptoms.
-    Uses a two-phase approach: intelligent keyword pre-filtering + MedGemma semantic matching.
-    This prevents token overflow by only sending relevant diseases to the AI model.
+    Search for diseases using intelligent semantic matching with native Gemma3 embeddings.
+    Simple interface: just pass symptoms as a string.
 
     Args:
-        symptoms: User-provided symptoms or conditions. Can be a string (e.g., "cough and sore throat") 
-                 or a list of strings (e.g., ["cough", "sore throat"])
+        symptoms: User-provided symptoms as a single string
         max_results: Maximum number of results to return (default: 10)
 
     Returns:
         JSON string containing matched diseases or error message
     """
     try:
+        logger.info(f"Disease search called with symptoms: '{symptoms}'")
+        
+        # Input validation
+        if not symptoms or not isinstance(symptoms, str):
+            return json.dumps({
+                "success": False,
+                "message": "Please provide symptoms as text",
+                "matched_diseases": []
+            })
+        
+        # Preprocess symptoms
+        processed_symptoms = _preprocess_symptoms(symptoms)
+        
+        if len(processed_symptoms.strip()) < 3:
+            return json.dumps({
+                "success": False,
+                "message": "Please provide more detailed symptoms",
+                "matched_diseases": []
+            })
+        
+        # Check if query is medically relevant
+        if not _is_medical_query(processed_symptoms):
+            return json.dumps({
+                "success": False,
+                "message": "I couldn't find any medical symptoms in your description. Please describe your health symptoms or conditions.",
+                "matched_diseases": []
+            })
+        
+        # Load or create disease embeddings
+        if not _load_disease_embeddings():
+            return json.dumps({
+                "success": False,
+                "message": "Error loading disease database",
+                "matched_diseases": []
+            })
+        
+        # Initialize embedding model
+        model = _initialize_embedding_model()
+        
+        # Generate embedding for symptoms using EmbeddingGemma
+        logger.info("Generating symptom embedding with EmbeddingGemma...")
+        symptom_embedding = model.encode([processed_symptoms])
+        
+        # Calculate cosine similarities
+        logger.info("Calculating similarities with disease database...")
+        similarities = cosine_similarity(symptom_embedding, disease_embeddings_cache)[0]
+        
+        # Get top matches
+        top_indices = np.argsort(similarities)[::-1][:max_results * 2]  # Get more for filtering
+        
+        # Filter and format results
+        matched_diseases = []
+        for idx in top_indices:
+            similarity_score = similarities[idx]
+            
+            # Only include results with reasonable similarity (threshold: 0.25)
+            if similarity_score < 0.25:
+                break
+            
+            disease_info = disease_data_cache[idx].copy()
+            disease_info["match_score"] = round(float(similarity_score), 3)
+            disease_info["match_type"] = "gemma3_semantic"
+            disease_info["rank"] = len(matched_diseases) + 1
+            
+            matched_diseases.append(disease_info)
+            
+            if len(matched_diseases) >= max_results:
+                break
+        
+        if not matched_diseases:
+            return json.dumps({
+                "success": False,
+                "message": "No matching diseases found for the provided symptoms. Please try describing your symptoms differently or provide more specific details.",
+                "matched_diseases": []
+            })
+        
+        logger.info(f"Found {len(matched_diseases)} matching diseases")
+        
+        return json.dumps({
+            "success": True,
+            "message": f"Found {len(matched_diseases)} diseases matching your symptoms using Gemma3 semantic analysis",
+            "search_method": "gemma3_semantic",
+            "search_query": processed_symptoms,
+            "matched_diseases": matched_diseases
+        }, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Error in disease search: {e}", exc_info=True)
+        return json.dumps({
+            "success": False,
+            "message": f"Error searching diseases: {str(e)}",
+            "matched_diseases": []
+        })
+
+def _preprocess_symptoms(symptoms_text: str) -> str:
+    """Preprocess and normalize symptom text"""
+    # Basic cleaning
+    text = symptoms_text.lower().strip()
+    
+    # Remove extra whitespace
+    text = re.sub(r'\s+', ' ', text)
+    
+    # Expand common medical abbreviations
+    abbreviations = {
+        'bp': 'blood pressure',
+        'hr': 'heart rate',
+        'temp': 'temperature',
+        'resp': 'respiratory',
+        'gi': 'gastrointestinal',
+        'uti': 'urinary tract infection',
+        'sob': 'shortness of breath',
+        'loc': 'loss of consciousness'
+    }
+    
+    for abbr, full in abbreviations.items():
+        text = re.sub(r'\b' + abbr + r'\b', full, text)
+    
+    return text
+
+def _is_medical_query(symptoms_text: str) -> bool:
+    """Check if the input contains medical terms or symptoms"""
+    text_lower = symptoms_text.lower()
+    words = re.findall(r'\b\w+\b', text_lower)
+    
+    # Check for medical terms
+    medical_word_count = 0
+    total_meaningful_words = 0
+    
+    # Common stop words to ignore
+    stop_words = {'i', 'have', 'am', 'is', 'the', 'a', 'an', 'and', 'or', 'but', 'my', 'me'}
+    
+    for word in words:
+        if len(word) > 2 and word not in stop_words:
+            total_meaningful_words += 1
+            
+            # Check if word is in any medical category
+            for category_terms in MEDICAL_TERMS.values():
+                if word in category_terms:
+                    medical_word_count += 1
+                    break
+            
+            # Check for partial matches with medical terms
+            for category_terms in MEDICAL_TERMS.values():
+                for term in category_terms:
+                    if len(word) > 3 and (word in term or term in word):
+                        medical_word_count += 0.5
+                        break
+    
+    # Calculate medical relevance ratio
+    if total_meaningful_words == 0:
+        return False
+    
+    medical_ratio = medical_word_count / total_meaningful_words
+    
+    # Require at least 30% medical terms or at least 2 medical terms
+    is_medical = medical_ratio >= 0.3 or medical_word_count >= 2
+    
+    logger.info(f"Medical relevance check: {medical_word_count}/{total_meaningful_words} = {medical_ratio:.2f}, is_medical: {is_medical}")
+    return is_medical
+
+def _load_disease_embeddings() -> bool:
+    """Load cached disease embeddings or create them if they don't exist"""
+    global disease_embeddings_cache, disease_data_cache
+    
+    embeddings_file = cache_dir / "disease_embeddings.pkl"
+    data_file = cache_dir / "disease_data.pkl"
+    
+    if embeddings_file.exists() and data_file.exists():
+        try:
+            logger.info("Loading cached disease embeddings...")
+            with open(embeddings_file, 'rb') as f:
+                disease_embeddings_cache = pickle.load(f)
+            with open(data_file, 'rb') as f:
+                disease_data_cache = pickle.load(f)
+            logger.info(f"Loaded {len(disease_data_cache)} cached disease embeddings")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to load cached embeddings: {e}")
+    
+    return _create_disease_embeddings()
+
+def _create_disease_embeddings() -> bool:
+    """Create embeddings for all diseases in the database"""
+    global disease_embeddings_cache, disease_data_cache
+    
+    try:
+        logger.info("Creating disease embeddings from database...")
+        
         db = SessionLocal()
         try:
-            # Get all diseases from disease_master table
+            # Get all active diseases
             query = text("""
                 SELECT id, disease_name, icd11_code, snowmed_ct
                 FROM disease_master 
@@ -53,337 +275,74 @@ async def search_diseases(symptoms: Union[str, List[str]], max_results: int = 10
             """)
             
             result = db.execute(query)
-            all_diseases = result.fetchall()
+            diseases = result.fetchall()
             
-            if not all_diseases:
-                return json.dumps({
-                    "success": False,
-                    "message": "No diseases found in the database",
-                    "matched_diseases": []
+            if not diseases:
+                logger.error("No diseases found in database")
+                return False
+            
+            # Initialize embedding model
+            model = _initialize_embedding_model()
+            
+            # Prepare disease texts and data
+            disease_texts = []
+            disease_data = []
+            
+            for disease_row in diseases:
+                disease_id, disease_name, icd11_code, snowmed_ct = disease_row
+                
+                # Create comprehensive text representation for better embeddings
+                disease_text = disease_name.lower()
+                
+                # Add ICD code context if available
+                if icd11_code:
+                    disease_text += f" {icd11_code}"
+                
+                # Add SNOMED CT context if available
+                if snowmed_ct:
+                    disease_text += f" {snowmed_ct}"
+                
+                disease_texts.append(disease_text)
+                disease_data.append({
+                    'disease_id': disease_id,
+                    'disease_name': disease_name,
+                    'icd11_code': icd11_code or "",
+                    'snowmed_ct': snowmed_ct or ""
                 })
-
-            # Handle both string and list inputs for symptoms
-            if isinstance(symptoms, list):
-                symptoms_text = " ".join(str(symptom) for symptom in symptoms).strip()
-            else:
-                symptoms_text = str(symptoms).strip()
             
-            if not symptoms_text or len(symptoms_text.strip()) < 2:
-                return json.dumps({
-                    "success": False,
-                    "message": "Please provide more specific symptoms or conditions",
-                    "matched_diseases": []
-                })
+            # Generate embeddings in batches to avoid memory issues
+            logger.info(f"Generating embeddings for {len(disease_texts)} diseases...")
+            batch_size = 100
+            all_embeddings = []
             
-            # Phase 1: Intelligent pre-filtering to reduce candidate set
-            candidate_diseases = _intelligent_prefilter(all_diseases, symptoms_text)
+            for i in range(0, len(disease_texts), batch_size):
+                batch = disease_texts[i:i + batch_size]
+                batch_embeddings = model.encode(batch, show_progress_bar=True)
+                all_embeddings.append(batch_embeddings)
+                logger.info(f"Processed batch {i//batch_size + 1}/{(len(disease_texts) + batch_size - 1)//batch_size}")
             
-            # Phase 2: Use MedGemma for semantic matching on filtered candidates
-            if openai_client is not None and candidate_diseases:
-                return await _medgemma_semantic_match(db, candidate_diseases, symptoms_text, max_results)
-            else:
-                # Fallback to enhanced keyword search on all diseases
-                return _enhanced_keyword_search(db, all_diseases, symptoms_text, max_results)
-
+            # Combine all embeddings
+            disease_embeddings_cache = np.vstack(all_embeddings)
+            disease_data_cache = disease_data
+            
+            # Cache the embeddings
+            embeddings_file = cache_dir / "disease_embeddings.pkl"
+            data_file = cache_dir / "disease_data.pkl"
+            
+            with open(embeddings_file, 'wb') as f:
+                pickle.dump(disease_embeddings_cache, f)
+            with open(data_file, 'wb') as f:
+                pickle.dump(disease_data_cache, f)
+            
+            logger.info(f"Created and cached embeddings for {len(disease_data_cache)} diseases")
+            return True
+            
         finally:
             db.close()
-
+            
     except Exception as e:
-        logger.error(f"Error searching diseases: {e}")
-        return json.dumps({
-            "success": False,
-            "message": f"Error searching diseases: {str(e)}",
-            "matched_diseases": []
-        })
-
-
-def _intelligent_prefilter(all_diseases, symptoms_text: str, max_candidates: int = 50) -> List:
-    """
-    Intelligently pre-filter diseases using enhanced keyword matching and medical synonyms.
-    This reduces the candidate set to prevent token overflow in MedGemma.
-    """
-    try:
-        # Clean and normalize symptoms
-        symptoms_clean = symptoms_text.lower().strip()
-        symptoms_words = re.findall(r'\b\w+\b', symptoms_clean)
-        
-        # Remove common stop words
-        stop_words = {'and', 'or', 'the', 'a', 'an', 'i', 'have', 'am', 'is', 'with', 'my', 'me', 'like', 'think', 'feel'}
-        symptoms_words = [word for word in symptoms_words if word not in stop_words and len(word) > 2]
-        
-        # Medical synonym expansion for better matching
-        medical_synonyms = {
-            'fever': ['pyrexia', 'temperature', 'hyperthermia', 'febrile'],
-            'rash': ['eruption', 'dermatitis', 'exanthem', 'skin'],
-            'throat': ['pharynx', 'pharyngeal', 'larynx', 'tonsil'],
-            'sore': ['painful', 'tender', 'inflamed', 'ache'],
-            'sandpaper': ['rough', 'papular', 'scaly', 'textured'],
-            'cough': ['coughing', 'tussis', 'bronchial'],
-            'headache': ['cephalgia', 'head', 'migraine'],
-            'stomach': ['gastric', 'abdominal', 'belly', 'gastro'],
-            'nausea': ['nauseous', 'sick', 'vomiting', 'emesis'],
-            'diarrhea': ['loose', 'watery', 'bowel', 'stool'],
-            'fatigue': ['tired', 'weakness', 'exhaustion', 'lethargy'],
-            'joint': ['arthritis', 'articular', 'knee', 'elbow', 'wrist'],
-            'muscle': ['muscular', 'myalgia', 'ache', 'pain'],
-            'breathing': ['respiratory', 'dyspnea', 'shortness', 'breath'],
-            'chest': ['thoracic', 'cardiac', 'heart', 'lung']
-        }
-        
-        # Expand symptoms with synonyms
-        expanded_symptoms = set(symptoms_words)
-        for symptom in symptoms_words:
-            if symptom in medical_synonyms:
-                expanded_symptoms.update(medical_synonyms[symptom])
-            # Also check if symptom is a synonym of any key
-            for key, synonyms in medical_synonyms.items():
-                if symptom in synonyms:
-                    expanded_symptoms.add(key)
-                    expanded_symptoms.update(synonyms)
-        
-        # Score diseases based on keyword matching
-        scored_diseases = []
-        for disease_row in all_diseases:
-            disease_id, disease_name, icd11_code, snowmed_ct = disease_row
-            disease_name_clean = disease_name.lower()
-            disease_words = re.findall(r'\b\w+\b', disease_name_clean)
-            
-            score = 0
-            matched_terms = []
-            
-            # Check for matches with expanded symptoms
-            for symptom in expanded_symptoms:
-                # Exact word match (highest score)
-                if symptom in disease_words:
-                    score += 20
-                    matched_terms.append(symptom)
-                # Partial match within disease name
-                elif any(symptom in word or word in symptom for word in disease_words if len(symptom) > 3):
-                    score += 10
-                    matched_terms.append(symptom)
-                # Substring match in full disease name
-                elif symptom in disease_name_clean and len(symptom) > 3:
-                    score += 5
-                    matched_terms.append(symptom)
-            
-            # Bonus for multiple matches
-            if len(matched_terms) > 1:
-                score += len(matched_terms) * 3
-            
-            if score > 0:
-                scored_diseases.append({
-                    'disease_row': disease_row,
-                    'score': score,
-                    'matched_terms': matched_terms
-                })
-        
-        # Sort by score and return top candidates
-        scored_diseases.sort(key=lambda x: x['score'], reverse=True)
-        return [item['disease_row'] for item in scored_diseases[:max_candidates]]
-        
-    except Exception as e:
-        logger.error(f"Error in intelligent prefilter: {e}")
-        # Return first N diseases as fallback
-        return all_diseases[:max_candidates]
-
-
-async def _medgemma_semantic_match(db, candidate_diseases, symptoms_text: str, max_results: int) -> str:
-    """
-    Use MedGemma-27B-IT model for semantic matching on pre-filtered candidate diseases.
-    This prevents token overflow by working with a smaller, relevant disease set.
-    """
-    try:
-        # Prepare disease data
-        disease_data = {}
-        disease_list = []
-        
-        for disease_row in candidate_diseases:
-            disease_id, disease_name, icd11_code, snowmed_ct = disease_row
-            disease_list.append(f"{disease_id}: {disease_name}")
-            disease_data[disease_id] = {
-                "disease_id": disease_id,
-                "disease_name": disease_name,
-                "icd11_code": icd11_code or "",
-                "snowmed_ct": snowmed_ct or ""
-            }
-        
-        # Create concise prompt for MedGemma
-        prompt = f"""Medical symptom analysis task.
-
-Symptoms: "{symptoms_text}"
-
-Candidate diseases:
-{chr(10).join(disease_list)}
-
-Task: Rank diseases by likelihood based on symptoms. Return JSON array of disease IDs only.
-Format: [id1, id2, id3]
-Limit: {max_results} diseases
-
-Response:"""
-
-        # Call MedGemma with optimized parameters
-        response = await openai_client.chat.completions.create(
-            model=os.getenv("AI_MODEL_NAME"),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=150  # Reduced for efficiency
-        )
-        
-        ai_response = response.choices[0].message.content.strip()
-        logger.info(f"MedGemma semantic match for '{symptoms_text}': {ai_response}")
-        
-        # Parse AI response
-        try:
-            # Extract JSON array
-            json_match = re.search(r'\[[\d,\s]+\]', ai_response)
-            if json_match:
-                disease_ids = json.loads(json_match.group())
-            else:
-                # Fallback: extract numbers
-                disease_ids = [int(x) for x in re.findall(r'\b\d+\b', ai_response)]
-            
-            # Build results
-            matched_diseases = []
-            for i, disease_id in enumerate(disease_ids[:max_results]):
-                if disease_id in disease_data:
-                    disease_info = disease_data[disease_id].copy()
-                    disease_info["match_score"] = round(1.0 - (i * 0.1), 2)
-                    disease_info["match_type"] = "medgemma_semantic"
-                    disease_info["rank"] = i + 1
-                    matched_diseases.append(disease_info)
-            
-            if matched_diseases:
-                return json.dumps({
-                    "success": True,
-                    "message": f"Found {len(matched_diseases)} diseases using AI semantic analysis",
-                    "search_method": "medgemma_semantic",
-                    "search_query": symptoms_text,
-                    "candidates_analyzed": len(candidate_diseases),
-                    "matched_diseases": matched_diseases
-                }, indent=2)
-            else:
-                # Fallback to keyword search on candidates
-                return _enhanced_keyword_search(db, candidate_diseases, symptoms_text, max_results)
-                
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Failed to parse MedGemma response: {e}")
-            return _enhanced_keyword_search(db, candidate_diseases, symptoms_text, max_results)
-        
-    except Exception as e:
-        logger.error(f"Error in MedGemma semantic match: {e}")
-        return _enhanced_keyword_search(db, candidate_diseases, symptoms_text, max_results)
-
-
-def _enhanced_keyword_search(db, diseases, symptoms_text: str, max_results: int) -> str:
-    """
-    Enhanced keyword-based search with medical synonyms and intelligent scoring.
-    """
-    try:
-        import re
-        
-        # Clean and normalize the symptoms input
-        symptoms_clean = symptoms_text.lower().strip()
-        symptoms_words = re.findall(r'\b\w+\b', symptoms_clean)
-        
-        # Filter out common stop words that aren't medically relevant
-        stop_words = {'and', 'or', 'the', 'a', 'an', 'i', 'have', 'am', 'is', 'with', 'my', 'me', 'like', 'think'}
-        symptoms_words = [word for word in symptoms_words if word not in stop_words and len(word) > 2]
-        
-        if not symptoms_words:
-            return json.dumps({
-                "success": False,
-                "message": "Please provide more specific symptoms or conditions",
-                "matched_diseases": []
-            })
-
-        matched_diseases = []
-        
-        for disease_row in diseases:
-            disease_id, disease_name, icd11_code, snowmed_ct = disease_row
-            disease_name_clean = disease_name.lower()
-            
-            # Calculate match score with enhanced logic
-            match_score = 0
-            matched_terms = []
-            
-            # Check for exact word matches (high score)
-            for symptom_word in symptoms_words:
-                if symptom_word in disease_name_clean:
-                    match_score += 15  # Increased weight for exact matches
-                    matched_terms.append(symptom_word)
-            
-            # Check for partial matches and medical term variations
-            for symptom_word in symptoms_words:
-                if symptom_word not in matched_terms:
-                    # Check if symptom word is contained in any word of the disease name
-                    disease_words = re.findall(r'\b\w+\b', disease_name_clean)
-                    for disease_word in disease_words:
-                        if len(symptom_word) > 3:
-                            if symptom_word in disease_word:
-                                match_score += 8
-                                if symptom_word not in matched_terms:
-                                    matched_terms.append(symptom_word)
-                            elif disease_word in symptom_word:
-                                match_score += 5
-                                if symptom_word not in matched_terms:
-                                    matched_terms.append(symptom_word)
-                    
-                    # Medical synonym matching for common terms
-                    medical_synonyms = {
-                        'fever': ['pyrexia', 'temperature', 'hyperthermia'],
-                        'rash': ['eruption', 'dermatitis', 'exanthem'],
-                        'throat': ['pharynx', 'pharyngeal', 'larynx'],
-                        'sore': ['painful', 'tender', 'inflamed'],
-                        'sandpaper': ['rough', 'papular', 'scaly']
-                    }
-                    
-                    for synonym_group in medical_synonyms.values():
-                        if symptom_word in synonym_group:
-                            for disease_word in disease_words:
-                                if any(syn in disease_word for syn in synonym_group):
-                                    match_score += 10
-                                    if symptom_word not in matched_terms:
-                                        matched_terms.append(symptom_word)
-
-            # Add disease to results if it has a meaningful match score
-            if match_score > 3:
-                matched_diseases.append({
-                    "disease_id": disease_id,
-                    "disease_name": disease_name,
-                    "icd11_code": icd11_code or "",
-                    "snowmed_ct": snowmed_ct or "",
-                    "match_score": round(match_score, 2),
-                    "match_type": "enhanced_keyword",
-                    "matched_terms": matched_terms
-                })
-
-        # Sort by match score (descending) and limit results
-        matched_diseases.sort(key=lambda x: x["match_score"], reverse=True)
-        matched_diseases = matched_diseases[:max_results]
-        
-        if not matched_diseases:
-            return json.dumps({
-                "success": False,
-                "message": f"I couldn't find any diseases matching '{symptoms_text}' in our database. Could you provide more specific medical symptoms or try different terms?",
-                "matched_diseases": []
-            })
-
-        return json.dumps({
-            "success": True,
-            "message": f"Found {len(matched_diseases)} potential diseases matching your symptoms",
-            "search_method": "enhanced_keyword",
-            "search_terms": symptoms_words,
-            "matched_diseases": matched_diseases
-        }, indent=2)
-        
-    except Exception as e:
-        logger.error(f"Error in keyword search: {e}")
-        return json.dumps({
-            "success": False,
-            "message": f"Error in keyword search: {str(e)}",
-            "matched_diseases": []
-        })
-
+        logger.error(f"Error creating disease embeddings: {e}")
+        return False
 
 def search_diseases_schema():
     """Return the function schema for the search_diseases tool"""
@@ -391,13 +350,13 @@ def search_diseases_schema():
         "type": "function",
         "function": {
             "name": "search_diseases",
-            "description": "Search for diseases in the medical database based on user-provided symptoms or conditions. Uses intelligent matching to find relevant diseases from the disease_master table.",
+            "description": "Search for diseases based on symptoms using intelligent Gemma3 semantic matching. Simply provide all symptoms as a single text string.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "symptoms": {
                         "type": "string",
-                        "description": "User-provided symptoms or conditions (e.g., 'cough and sore throat', 'fever', 'headache')",
+                        "description": "All symptoms described by the user as a single text string (e.g., 'dry itchy patches on elbows and knees, worse in evenings')",
                     },
                     "max_results": {
                         "type": "integer",
@@ -409,17 +368,17 @@ def search_diseases_schema():
             },
             "examples": [
                 {
-                    "input": "I have a cough and sore throat",
+                    "input": "I have dry, itchy patches on my elbows and behind my knees. The skin is flaky and sometimes cracks.",
                     "call": {
                         "name": "search_diseases",
-                        "arguments": {"symptoms": "cough and sore throat"},
+                        "arguments": {"symptoms": "dry itchy patches on elbows and knees, flaky skin, cracking skin"},
                     },
                 },
                 {
-                    "input": "I'm experiencing fever and headache",
+                    "input": "I've been having stomach cramps, bloating, and irregular bowel movements for the past month.",
                     "call": {
                         "name": "search_diseases",
-                        "arguments": {"symptoms": "fever and headache"},
+                        "arguments": {"symptoms": "stomach cramps, bloating, irregular bowel movements"},
                     },
                 },
             ],

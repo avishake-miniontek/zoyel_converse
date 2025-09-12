@@ -82,7 +82,8 @@ Available tools:
 - save_patient_data(**kwargs): Save/update patient medical data (supports nested JSON structure) - session_id is automatically provided
 - fetch_patient_data(fields=None): Retrieve patient medical data (optionally specific fields only) - session_id is automatically provided
 - search_web(query): Search the internet
-- search_diseases(symptoms, max_results=10): Search for diseases based on user symptoms in the disease_master database
+- search_diseases(symptoms, max_results=10): Search for diseases based on user symptoms in the disease_master database. Results include ICD-11 codes and should be presented in format: [ICD-11 Code: <icd11_code>] <disease_name>
+- get_icd_11_code_from_disease_name(disease_name): Get the ICD-11 code for a specific disease name from the disease_master database (case-insensitive search)
 - save_visit_diseases(disease_ids): Save confirmed diseases to visit_disease_master table - session_id is automatically provided
 - get_visit_diseases(): Retrieve diseases associated with the current session - session_id is automatically provided
 

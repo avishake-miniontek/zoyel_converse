@@ -26,7 +26,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from dataclasses import dataclass
-from tools import TOOL_FUNCTIONS
+from tools import TOOL_FUNCTIONS, TOOL_SCHEMAS
 from dotenv import load_dotenv
 
 # External dependencies (install with: pip install openai transformers torch torchaudio kokoro-tts)
@@ -61,120 +61,69 @@ AI_MODEL_NAME=os.getenv("AI_MODEL_NAME")
 # Updated SYSTEM_PROMPT for server.py with disease matching workflow
 
 SYSTEM_PROMPT = """
-You are Zoya, a helpful medical AI assistant who communicates through voice. Generally it's a patient that you will be talking to.
-You are part of a secure medical software system with strict privacy and non-disclosure policies. Collecting and storing patient data is necessary and safe for providing accurate medical assistance, differential diagnosis, and recalling information later.
+You are Zoya, a helpful medical AI assistant who communicates through voice with patients.
+You are part of a secure medical software system. Collecting and storing patient data is necessary for providing accurate medical assistance and recalling information later.
 
-You have access to tools that can help answer questions. When you need to use a tool, wrap the function call in <tool_call></tool_call> tags like this:
+You have access to tools that help with medical consultations. When you need to use a tool, use markdown code blocks with 'tool_code' language:
 
-<tool_call>get_time()</tool_call>
-<tool_call>get_weather('New York')</tool_call>
-<tool_call>calculate('2 + 2')</tool_call>
-<tool_call>save_patient_data(age={'years': 25, 'months': 0, 'days': 0}, complaints=[{'symptom': 'headache', 'severity': 'moderate', 'since': '2 days'}], vitals={'weight_kg': 60, 'height_cm': 162, 'bp_systolic': 110, 'bp_diastolic': 80, 'temperature_c': 37.6, 'heart_rate': 88, 'respiration_rate': 18, 'spo2': 99, 'lmp': '15-07-2025'})</tool_call>
-<tool_call>fetch_patient_data()</tool_call>
-<tool_call>search_diseases('cough and sore throat')</tool_call>
-<tool_call>save_visit_diseases(disease_ids=[1, 556, 557])</tool_call>
-<tool_call>get_visit_diseases()</tool_call>
+```tool_code
+get_time()
+```
 
-Available tools:
-- get_time(): Get current time
-- get_weather(location): Get weather for a location
-- calculate(expression): Perform calculations
-- save_patient_data(**kwargs): Save/update patient medical data (supports nested JSON structure) - session_id is automatically provided
-- fetch_patient_data(fields=None): Retrieve patient medical data (optionally specific fields only) - session_id is automatically provided
-- search_web(query): Search the internet
-- search_diseases(symptoms, max_results=10): Search for diseases based on user symptoms in the disease_master database. Results include ICD-11 codes and should be presented in format: [ICD-11 Code: <icd11_code>] <disease_name>
-- get_icd_11_code_from_disease_name(disease_name): Get the ICD-11 code for a specific disease name from the disease_master database (case-insensitive search)
-- save_visit_diseases(disease_ids): Save confirmed diseases to visit_disease_master table - session_id is automatically provided
-- get_visit_diseases(): Retrieve diseases associated with the current session - session_id is automatically provided
+```tool_code
+fetch_patient_data()
+```
+
+```tool_code
+save_patient_data(age={'years': 25, 'months': 0, 'days': 0}, complaints=[{'symptom': 'headache', 'severity': 'moderate', 'since': '2 days'}])
+```
+
+```tool_code
+search_diseases('cough and sore throat')
+```
+
+```tool_code
+save_visit_diseases(disease_ids=[1, 556, 557])
+```
 
 MEDICAL CONSULTATION WORKFLOW:
 
-At the beginning of every conversation, first use the fetch_patient_data tool to check for and load any existing patient data for this session. Then proceed with the following workflow:
+1. ALWAYS start by checking existing patient data:
+```tool_code
+fetch_patient_data()
+```
 
-PHASE 1: BASIC PATIENT DATA COLLECTION
-If no patient data exists or it's incomplete, politely greet the patient and start collecting their basic information:
-- Age (in years, months, days)
-- Gender, city, country
-- Basic vitals if relevant
-- Past medical history and current medications
-- Allergies
+2. If no patient data exists, ASK the patient for information first, then save:
+- Ask for age, gender, location (city, country)
+- Ask for past medical history, current medications, allergies
+- ONLY call save_patient_data() AFTER receiving actual information from patient
+- NEVER save empty or placeholder data
 
-PHASE 2: SYMPTOM ASSESSMENT AND DISEASE MATCHING
-After collecting basic information, ask about their current health concerns:
-- Ask: "What symptoms or conditions are you experiencing today?" or "What brings you in today?"
-- When the user describes symptoms, use the search_diseases tool to find matching diseases
-- Present the matched diseases to the user for confirmation in a natural, conversational way
-- Example: "Based on what you've described, I found several possible conditions in our database: [list diseases]. Do any of these match what you're experiencing?"
+3. Ask about current symptoms and search for matching diseases:
+- When patient describes symptoms, use search_diseases() with all symptoms as one string
+- Present top 3-5 results naturally to patient
+- After confirmation, save diseases with exact disease_id values from search results
 
-DISEASE MATCHING GUIDELINES:
-- Always use search_diseases when the user mentions symptoms, conditions, or health problems
-- IMPORTANT: The search_diseases tool now uses NATIVE GEMMA3 EMBEDDINGS for intelligent semantic matching:
-  * Simple interface: just pass ALL symptoms as a single string
-  * Uses EmbeddingGemma (google/embeddinggemma-300m) for native Gemma3 semantic understanding
-  * Automatically filters out non-medical inputs like "I have football, I have mosquito"
-  * Pre-computed embeddings for ~18,000 diseases with fast cached similarity matching
-  * Medical relevance detection prevents irrelevant queries from returning false matches
-  * Comprehensive medical term recognition with synonym expansion
-- CRITICAL: ALWAYS wait for tool results before responding - the tool WILL work with proper symptoms
-- The tool returns JSON with "success": true/false and "matched_diseases" array
-- If success=true with matched diseases, present them naturally to the patient
-- If success=false, the message field explains why (e.g., non-medical input detected, no matches found)
-- The tool uses semantic similarity scoring - higher scores indicate better matches
-- For any symptom description like "dry itchy patches on elbows and knees" - the tool WILL find relevant matches
-- Present matched diseases clearly but not overwhelmingly - limit to top 3-5 most relevant matches
-- CRITICAL: After user confirms diseases, use the EXACT disease_id values from the search_diseases results in save_visit_diseases
-- Example: If search results show disease_id: 13 for "Scarlet Fever", use save_visit_diseases(disease_ids=[13])
-- NEVER use placeholder IDs - always use actual disease_id from search results
-- The system uses Gemma3 embeddings for consistent understanding with your MedGemma model
+4. Collect detailed clinical information and update patient data as needed
 
-PHASE 3: DETAILED CLINICAL ASSESSMENT
-Once diseases are confirmed and saved:
-- Gather detailed information about each confirmed condition
-- Collect relevant vitals and examination findings
-- Document complaints with severity and duration
-- Ask about test results if relevant
-- Update patient data using save_patient_data as you collect information
+CRITICAL RULES:
+- NEVER respond before tool execution completes
+- ALWAYS use exact disease_id values from search_diseases results
+- NEVER hallucinate medical data - rely on tools
+- NEVER hallucinate or invent tool parameters - use ONLY the exact schemas provided
+- ONLY save patient data AFTER receiving real information from patient
+- NEVER save empty, null, or placeholder data (age=0, empty strings, etc.)
+- Wait for tool results before continuing conversation
+- Follow tool schemas EXACTLY as specified - no exceptions
+- ASK before saving - don't assume data
 
-DATA PERSISTENCE REQUIREMENTS:
-- ALWAYS save patient data immediately after collecting ANY new information using save_patient_data
-- ALWAYS save confirmed diseases using save_visit_diseases after user confirmation
-- Use get_visit_diseases to recall what conditions were confirmed for this session
-- Never lose patient data due to technical issues - retry saves if they fail
-
-CRITICAL DATA STRUCTURE REQUIREMENTS:
-When using save_patient_data, follow these exact formats:
-- For vitals: bp_systolic, bp_diastolic (NOT blood_pressure)
-- For family_history: ['Hypertension (Mother)', 'Breast Cancer (Maternal Aunt)']
-- For current_medications: ['Levothyroxine 75mcg once daily']
-- For past_medical_history: {'past_illnesses': [{'illness': 'UTI', 'date': '05-09-2023'}], 'previous_procedures': [{'procedure': 'Cystoscopy', 'date': '10-10-2023'}]}
-- For allergies: {'drug_allergies': ['Ibuprofen'], 'food_allergies': ['Shellfish']}
-- For physical_examination: use TEXT STRING, not dictionary
-
-CONVERSATION EXAMPLES:
-
-User: "I have a cough and sore throat"
-Assistant: Let me search for conditions that match your symptoms.
-<tool_call>search_diseases('cough and sore throat')</tool_call>
-Based on your symptoms, I found several possible conditions: Upper Respiratory Infection, Acute Pharyngitis, and Bronchitis. Do any of these sound like what you're experiencing?
-
-User: "Yes, the upper respiratory infection and pharyngitis sound right"
-Assistant: I'll save those conditions for your visit.
-<tool_call>save_visit_diseases(disease_ids=[45, 78])</tool_call>
-Thank you for confirming. I've recorded Upper Respiratory Infection and Acute Pharyngitis as your current conditions. Now let me ask about the details...
-
-IMPORTANT: Always use the actual disease_id values returned by search_diseases. If Scarlet Fever has disease_id 13, use [13] not placeholder numbers.
-
-IMPORTANT RESPONSE GUIDELINES:
-
-1) Provide only plain text that will be converted to speech - never use markdown, asterisk *, code blocks, or special formatting
-2) Use natural, conversational language as if speaking to someone
-3) Never use bullet points, numbered lists, or special characters in your final response
-4) Keep responses concise and clear since they will be spoken aloud
-5) Express lists naturally using words like 'first', 'also', 'finally'
-6) Use punctuation only for natural speech pauses
-7) The tool calls will be executed automatically and removed from your response before it's spoken
-8) Always maintain a professional but warm, empathetic tone appropriate for medical consultations
-9) If you encounter technical errors, reassure the patient and retry operations as needed
+RESPONSE GUIDELINES:
+- Provide only plain text for voice conversion - no markdown formatting in final responses
+- Use natural, conversational language
+- Keep responses concise and clear for speech
+- Tool calls are executed automatically and removed before speech conversion
+- Maintain professional but warm, empathetic tone
+- If technical errors occur, reassure patient and retry operations
 """
 
 @dataclass
@@ -424,6 +373,7 @@ class VoiceAIServer:
         self.voice_processor = VoiceProcessor()  # You can pass a different model here, e.g., VoiceProcessor("openai/whisper-small")
         # Register tool functions for manual execution
         self.tool_functions = TOOL_FUNCTIONS
+        self.tool_schemas = TOOL_SCHEMAS
         self.sessions: Dict[str, Session] = {}
         self.connected_clients: Dict[str, websockets.WebSocketServerProtocol] = {}
         # Per-session locks to serialize processing and avoid role alternation errors
@@ -522,8 +472,45 @@ class VoiceAIServer:
         """
         convo = self._normalize_context(session.context)
 
+        # Build compact tool schema information to prevent context overflow
+        # Only include essential medical workflow tools to save tokens
+        core_medical_tools = ['fetch_patient_data', 'save_patient_data', 'search_diseases', 'save_visit_diseases', 'get_visit_diseases']
+        
+        tool_schemas_text = "\n\nCORE MEDICAL TOOLS (use EXACT parameters):\n"
+        for schema in self.tool_schemas:
+            func_info = schema.get('function', {})
+            name = func_info.get('name', 'unknown')
+            
+            # Only include core medical tools in detailed schema
+            if name in core_medical_tools:
+                parameters = func_info.get('parameters', {})
+                properties = parameters.get('properties', {})
+                required = parameters.get('required', [])
+                
+                # Compact format: tool_name(param1: type, param2: type)
+                param_list = []
+                for param_name, param_info in properties.items():
+                    param_type = param_info.get('type', 'string')
+                    if param_type == 'array':
+                        items_type = param_info.get('items', {}).get('type', 'any')
+                        param_type = f"list[{items_type}]"
+                    req_mark = "*" if param_name in required else ""
+                    param_list.append(f"{param_name}{req_mark}: {param_type}")
+                
+                params_str = ", ".join(param_list)
+                tool_schemas_text += f"{name}({params_str})\n"
+        
+        # Add other tools as simple list
+        other_tools = [schema.get('function', {}).get('name', 'unknown') for schema in self.tool_schemas 
+                      if schema.get('function', {}).get('name', 'unknown') not in core_medical_tools]
+        if other_tools:
+            tool_schemas_text += f"\nOther available tools: {', '.join(other_tools)}\n"
+        
+        # Create enhanced system prompt with compact schema info
+        enhanced_system_prompt = SYSTEM_PROMPT + tool_schemas_text + "\n\nIMPORTANT: Parameters marked with * are REQUIRED. Use exact parameter names and types. NEVER hallucinate parameters."
+
         # Reserve output tokens and some overhead so input+output stays within context
-        overhead_tokens = self._estimate_tokens(SYSTEM_PROMPT) + 64
+        overhead_tokens = self._estimate_tokens(enhanced_system_prompt) + 64
         available_for_context = max(
             0,
             session.context_max_tokens - session.max_tokens - overhead_tokens
@@ -531,13 +518,13 @@ class VoiceAIServer:
 
         convo = self._truncate_messages_to_token_limit(convo, available_for_context)
 
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages = [{"role": "system", "content": enhanced_system_prompt}]
         messages.extend(convo)
         return messages
     
     def _parse_tool_calls(self, text: str) -> List[Dict]:
-        """Parse tool calls from text using regex to find <tool_call>function_name(args)</tool_call> patterns."""
-        tool_call_pattern = r'<tool_call>(.*?)</tool_call>'
+        """Parse tool calls from text using regex to find ```tool_code\nfunction_name(args)\n``` patterns."""
+        tool_call_pattern = r'```tool_code\s*\n(.*?)\n```'
         matches = re.findall(tool_call_pattern, text, re.DOTALL)
         
         tool_calls = []
@@ -559,8 +546,8 @@ class VoiceAIServer:
         return tool_calls
     
     def _remove_tool_calls(self, text: str) -> str:
-        """Remove all <tool_call>...</tool_call> blocks from text."""
-        tool_call_pattern = r'<tool_call>.*?</tool_call>'
+        """Remove all ```tool_code...``` blocks from text."""
+        tool_call_pattern = r'```tool_code\s*\n.*?\n```'
         cleaned_text = re.sub(tool_call_pattern, '', text, flags=re.DOTALL)
         # Clean up extra whitespace
         cleaned_text = re.sub(r'\n\s*\n', '\n', cleaned_text)
@@ -813,11 +800,47 @@ class VoiceAIServer:
         
         return session
 
+    def _validate_tool_arguments(self, function_name: str, args: Dict) -> bool:
+        """Validate tool arguments to prevent empty/invalid calls"""
+        if function_name == "save_patient_data":
+            # Check for empty or placeholder data
+            age = args.get('age', {})
+            if isinstance(age, dict):
+                if age.get('years', 0) == 0 and age.get('months', 0) == 0 and age.get('days', 0) == 0:
+                    return False
+            
+            complaints = args.get('complaints', [])
+            if isinstance(complaints, list) and complaints:
+                for complaint in complaints:
+                    if isinstance(complaint, dict):
+                        if not complaint.get('symptom') or complaint.get('symptom') == '':
+                            return False
+            
+            # Don't save if all core fields are empty
+            core_fields = ['age', 'gender', 'city', 'country']
+            has_real_data = False
+            for field in core_fields:
+                value = args.get(field)
+                if value and value != '' and value != 0:
+                    has_real_data = True
+                    break
+            
+            return has_real_data
+        
+        return True
+    
     async def execute_tool_call(self, function_name: str, args: Dict, session_id: str, message_id: str = None) -> str:
         """Execute a single tool call and return the result."""
         try:
             if function_name not in self.tool_functions:
                 return f"Error: Unknown function '{function_name}'"
+            
+            # Validate arguments to prevent invalid calls
+            if not self._validate_tool_arguments(function_name, args):
+                return json.dumps({
+                    "error": f"Invalid or empty arguments for {function_name}. Please ask patient for real information first.",
+                    "message": "Cannot save empty or placeholder data"
+                })
             
             func = self.tool_functions[function_name]
             

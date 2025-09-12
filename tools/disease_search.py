@@ -11,6 +11,7 @@ import os
 import re
 from pathlib import Path
 from dotenv import load_dotenv
+from .get_icd_11_code_from_disease_name import get_icd_11_code_from_disease_name
 
 load_dotenv()
 
@@ -139,6 +140,11 @@ async def search_diseases(symptoms: str, max_results: int = 10) -> str:
             disease_info["match_score"] = round(float(similarity_score), 3)
             disease_info["match_type"] = "gemma3_semantic"
             disease_info["rank"] = len(matched_diseases) + 1
+            
+            # Fetch ICD-11 code and integrate into disease name
+            icd_code = get_icd_11_code_from_disease_name(disease_info["disease_name"])
+            if icd_code:
+                disease_info["disease_name"] = f"{disease_info['disease_name']} ({icd_code})"
             
             matched_diseases.append(disease_info)
             

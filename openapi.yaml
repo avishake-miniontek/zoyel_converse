@@ -476,7 +476,7 @@ components:
             - type: null
           title: Comorbidities
           default: []
-        past_history:
+        past_medical_history:
           anyOf:
             - $ref: '#/components/schemas/PastHistory'
             - type: null

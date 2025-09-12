@@ -146,7 +146,7 @@ When using save_patient_data, follow these exact formats:
 - For vitals: bp_systolic, bp_diastolic (NOT blood_pressure)
 - For family_history: ['Hypertension (Mother)', 'Breast Cancer (Maternal Aunt)']
 - For current_medications: ['Levothyroxine 75mcg once daily']
-- For past_history: {'past_illnesses': [{'illness': 'UTI', 'date': '05-09-2023'}], 'previous_procedures': [{'procedure': 'Cystoscopy', 'date': '10-10-2023'}]}
+- For past_medical_history: {'past_illnesses': [{'illness': 'UTI', 'date': '05-09-2023'}], 'previous_procedures': [{'procedure': 'Cystoscopy', 'date': '10-10-2023'}]}
 - For allergies: {'drug_allergies': ['Ibuprofen'], 'food_allergies': ['Shellfish']}
 - For physical_examination: use TEXT STRING, not dictionary
 

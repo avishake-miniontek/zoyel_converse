@@ -22,7 +22,7 @@ def fetch_patient_data(session_id: str, fields: List[str] = None) -> str:
         session_id: Unique session identifier
         fields: Optional list of specific fields to retrieve. If None, returns all data.
                 Available fields: age, gender, city, country, date, complaints, vitals,
-                physical_examination, comorbidities, past_history, current_medications,
+                physical_examination, comorbidities, past_medical_history, current_medications,
                 family_history, allergies, test_documents, test_results
 
     Returns:
@@ -70,7 +70,7 @@ def fetch_patient_data(session_id: str, fields: List[str] = None) -> str:
                 },
                 "physical_examination": patient.physical_examination or "",
                 "comorbidities": patient.comorbidities or [],
-                "past_history": {
+                "past_medical_history": {
                     "past_illnesses": patient.past_illnesses or [],
                     "previous_procedures": patient.previous_procedures or [],
                 },
@@ -142,7 +142,7 @@ def fetch_patient_data_schema():
                     "fields": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional list of specific fields to retrieve. Available: age, gender, city, country, date, complaints, vitals, physical_examination, comorbidities, past_history, current_medications, family_history, allergies, test_documents, test_results, metadata. If not specified, returns all data.",
+                        "description": "Optional list of specific fields to retrieve. Available: age, gender, city, country, date, complaints, vitals, physical_examination, comorbidities, past_medical_history, current_medications, family_history, allergies, test_documents, test_results, metadata. If not specified, returns all data.",
                     },
                 },
                 "required": ["session_id"],
@@ -162,7 +162,7 @@ def fetch_patient_data_schema():
                         "arguments": {
                             "session_id": "abc123",
                             "fields": [
-                                "past_history",
+                                "past_medical_history",
                                 "comorbidities",
                                 "family_history",
                             ],

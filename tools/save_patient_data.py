@@ -103,7 +103,7 @@ def save_patient_data(
     physical_examination: Any = "",
     comorbidities: List[str] = None,
     # Past history - can accept both formats
-    past_history: Optional[Dict[str, List[Dict]]] = None,
+    past_medical_history: Optional[Dict[str, List[Dict]]] = None,
     past_illnesses: List[Any] = None,  # Can be strings or objects
     previous_procedures: List[Any] = None,  # Can be strings or objects
     # Current treatment
@@ -134,7 +134,7 @@ def save_patient_data(
         weight_kg, height_cm, etc.: Individual vital components
         physical_examination: Physical examination findings (string or dict)
         comorbidities: List of comorbidities
-        past_history: Nested past history object (optional)
+        past_medical_history: Nested past history object (optional)
         past_illnesses: List of past illnesses (strings or objects)
         previous_procedures: List of previous procedures (strings or objects)
         current_medications: List of current medications
@@ -177,10 +177,10 @@ def save_patient_data(
             spo2 = vitals.get("spo2", spo2)
             lmp = vitals.get("lmp", lmp)
 
-        # Handle nested past_history structure
-        if past_history:
-            past_illnesses = past_history.get("past_illnesses", past_illnesses)
-            previous_procedures = past_history.get("previous_procedures", previous_procedures)
+        # Handle nested past_medical_history structure
+        if past_medical_history:
+            past_illnesses = past_medical_history.get("past_illnesses", past_illnesses)
+            previous_procedures = past_medical_history.get("previous_procedures", previous_procedures)
 
         # Handle nested allergies structure
         if allergies:
@@ -478,7 +478,7 @@ def save_patient_data_schema():
                     },
                     
                     # Past history - support both nested and flat
-                    "past_history": {
+                    "past_medical_history": {
                         "type": "object",
                         "description": "Nested past history object",
                         "properties": {

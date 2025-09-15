@@ -45,6 +45,20 @@ def save_visit_diseases(session_id: str, disease_ids: List[int]) -> str:
                 "success": False,
                 "message": "Disease IDs must be provided as a list"
             })
+        
+        # Filter out invalid IDs (0, negative numbers, non-integers)
+        valid_disease_ids = []
+        for did in disease_ids:
+            if isinstance(did, int) and did > 0:
+                valid_disease_ids.append(did)
+        
+        if not valid_disease_ids:
+            return json.dumps({
+                "success": False,
+                "message": "No valid disease IDs provided. Disease IDs must be positive integers."
+            })
+        
+        disease_ids = valid_disease_ids
 
         # Remove duplicates while preserving order
         disease_ids = list(dict.fromkeys(disease_ids))
@@ -52,22 +66,14 @@ def save_visit_diseases(session_id: str, disease_ids: List[int]) -> str:
         db = SessionLocal()
         try:
             # First, verify that all disease IDs exist in disease_master
-            if len(disease_ids) == 1:
-                # Handle single item case
-                verification_query = text("""
-                    SELECT id, disease_name 
-                    FROM disease_master 
-                    WHERE id = :disease_id AND active_flag = 'Y'
-                """)
-                result = db.execute(verification_query, {"disease_id": disease_ids[0]})
-            else:
-                # Handle multiple items case
-                verification_query = text("""
-                    SELECT id, disease_name 
-                    FROM disease_master 
-                    WHERE id IN :disease_ids AND active_flag = 'Y'
-                """)
-                result = db.execute(verification_query, {"disease_ids": tuple(disease_ids)})
+            # Use proper SQL IN clause syntax with placeholders
+            placeholders = ','.join(['?' for _ in disease_ids])
+            verification_query = text(f"""
+                SELECT id, disease_name 
+                FROM disease_master 
+                WHERE id IN ({placeholders}) AND active_flag = 'Y'
+            """)
+            result = db.execute(verification_query, disease_ids)
             
             existing_diseases = result.fetchall()
             existing_ids = [row[0] for row in existing_diseases]
@@ -130,83 +136,6 @@ def save_visit_diseases(session_id: str, disease_ids: List[int]) -> str:
         })
 
 
-def get_visit_diseases(session_id: str) -> str:
-    """
-    Retrieve all diseases associated with a specific session from visit_disease_master.
-    Joins with disease_master to get disease details.
-
-    Args:
-        session_id: Unique session identifier
-
-    Returns:
-        JSON string containing session diseases or error message
-    """
-    try:
-        if not session_id:
-            return json.dumps({
-                "success": False,
-                "message": "Session ID is required"
-            })
-
-        db = SessionLocal()
-        try:
-            # Query visit diseases with disease details
-            query = text("""
-                SELECT 
-                    vdm.id as visit_id,
-                    vdm.session_id,
-                    vdm.disease_id,
-                    dm.disease_name,
-                    dm.icd11_code,
-                    dm.snowmed_ct
-                FROM visit_disease_master vdm
-                JOIN disease_master dm ON vdm.disease_id = dm.id
-                WHERE vdm.session_id = :session_id
-                ORDER BY vdm.id
-            """)
-            
-            result = db.execute(query, {"session_id": session_id})
-            visit_diseases = result.fetchall()
-
-            if not visit_diseases:
-                return json.dumps({
-                    "success": True,
-                    "message": "No diseases found for this session",
-                    "session_id": session_id,
-                    "diseases": []
-                })
-
-            # Format the results
-            diseases_list = []
-            for row in visit_diseases:
-                visit_id, sess_id, disease_id, disease_name, icd11_code, snowmed_ct = row
-                diseases_list.append({
-                    "visit_id": visit_id,
-                    "disease_id": disease_id,
-                    "disease_name": disease_name,
-                    "icd11_code": icd11_code or "",
-                    "snowmed_ct": snowmed_ct or ""
-                })
-
-            return json.dumps({
-                "success": True,
-                "message": f"Found {len(diseases_list)} diseases for session {session_id}",
-                "session_id": session_id,
-                "diseases": diseases_list,
-                "count": len(diseases_list)
-            }, indent=2)
-
-        finally:
-            db.close()
-
-    except Exception as e:
-        logger.error(f"Error retrieving visit diseases: {e}")
-        return json.dumps({
-            "success": False,
-            "message": f"Error retrieving visit diseases: {str(e)}"
-        })
-
-
 def save_visit_diseases_schema():
     """Return the function schema for the save_visit_diseases tool"""
     return {
@@ -238,36 +167,6 @@ def save_visit_diseases_schema():
                             "session_id": "session-uuid-123",
                             "disease_ids": [1, 556, 557]
                         },
-                    },
-                },
-            ],
-        },
-    }
-
-
-def get_visit_diseases_schema():
-    """Return the function schema for the get_visit_diseases tool"""
-    return {
-        "type": "function",
-        "function": {
-            "name": "get_visit_diseases",
-            "description": "Retrieve all diseases associated with the current session from visit_disease_master table.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "Unique session identifier",
-                    },
-                },
-                "required": ["session_id"],
-            },
-            "examples": [
-                {
-                    "input": "What diseases have I confirmed in this session?",
-                    "call": {
-                        "name": "get_visit_diseases",
-                        "arguments": {"session_id": "session-uuid-123"},
                     },
                 },
             ],
